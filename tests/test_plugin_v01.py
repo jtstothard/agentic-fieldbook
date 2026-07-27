@@ -28,6 +28,7 @@ from agentic_fieldbook.plugin import (
     _parse_version,
     _check_hermes_version,
     _skills_toolset_available,
+    _gateway_is_running,
 )
 
 
@@ -436,6 +437,52 @@ class TestDoctorDetection:
         captured = capsys.readouterr()
         assert result == 0
         assert "verification" in captured.out.lower() or "checks" in captured.out.lower()
+
+
+class TestGatewayDetection:
+    """Test gateway presence detection for setup messaging."""
+
+    def test_gateway_detection_returns_bool(self):
+        """_gateway_is_running should return a boolean."""
+        result = _gateway_is_running()
+        assert isinstance(result, bool)
+
+    def test_gateway_detection_no_gateway_env(self, monkeypatch):
+        """Should return False when no gateway env vars are set."""
+        for key in ["HERMES_GATEWAY_BUSY_INPUT_MODE", "HERMES_DASHBOARD_PORT", "HERMES_GATEWAY_PORT"]:
+            monkeypatch.delenv(key, raising=False)
+        assert _gateway_is_running() is False
+
+    def test_gateway_detection_with_dashboard_port(self, monkeypatch):
+        """Should return True when HERMES_DASHBOARD_PORT is set."""
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_PORT", raising=False)
+        monkeypatch.setenv("HERMES_DASHBOARD_PORT", "9119")
+        assert _gateway_is_running() is True
+
+    def test_gateway_detection_with_busy_input_mode(self, monkeypatch):
+        """Should return True when HERMES_GATEWAY_BUSY_INPUT_MODE is set."""
+        monkeypatch.delenv("HERMES_DASHBOARD_PORT", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_PORT", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "interrupt")
+        assert _gateway_is_running() is True
+
+    def test_gateway_detection_with_gateway_port(self, monkeypatch):
+        """Should return True when HERMES_GATEWAY_PORT is set."""
+        monkeypatch.delenv("HERMES_DASHBOARD_PORT", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_PORT", "8000")
+        assert _gateway_is_running() is True
+
+    def test_gateway_detection_any_indicator_sufficient(self, monkeypatch):
+        """Should return True when ANY gateway indicator is present."""
+        monkeypatch.setenv("HERMES_DASHBOARD_PORT", "9119")
+        assert _gateway_is_running() is True
+
+        # Also true with just one other indicator
+        monkeypatch.delenv("HERMES_DASHBOARD_PORT", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "interrupt")
+        assert _gateway_is_running() is True
 
 
 @pytest.mark.integration

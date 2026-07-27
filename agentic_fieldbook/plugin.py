@@ -183,7 +183,12 @@ def _cmd_setup(args: Any) -> int:
         soul.write_text(existing + separator + block, encoding="utf-8")
         print(f"Inserted managed instructions into {soul}")
     print("Running doctor...")
-    return _cmd_doctor(args)
+    doctor_result = _cmd_doctor(args)
+    if doctor_result == 0 and _gateway_is_running():
+        print()
+        print("Restart the gateway for the plugin to take effect:")
+        print("  hermes gateway restart")
+    return doctor_result
 
 
 def _skills_toolset_available(hermes: Any) -> bool:
@@ -203,6 +208,23 @@ def _hermes_runtime_module() -> Any:
     except ImportError:
         import hermes_cli
         return hermes_cli
+
+
+def _gateway_is_running() -> bool:
+    """Detect if Hermes gateway is running for this profile.
+
+    Checks for gateway-related environment variables that indicate
+    a gateway session. Non-gateway profiles (CLI-only, dogfood, TUI)
+    won't have these set.
+    """
+    # HERMES_GATEWAY_BUSY_INPUT_MODE is set in gateway sessions
+    # HERMES_DASHBOARD_PORT indicates gateway web interface
+    gateway_indicators = [
+        "HERMES_GATEWAY_BUSY_INPUT_MODE",
+        "HERMES_DASHBOARD_PORT",
+        "HERMES_GATEWAY_PORT",
+    ]
+    return any(indicator in os.environ for indicator in gateway_indicators)
 
 
 def _cmd_doctor(args: Any) -> int:

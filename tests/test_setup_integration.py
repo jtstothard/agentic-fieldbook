@@ -20,6 +20,7 @@ from agentic_fieldbook.plugin import (
     _cmd_setup,
     _check_hermes_version,
     _skills_toolset_available,
+    _gateway_is_running,
 )
 
 
