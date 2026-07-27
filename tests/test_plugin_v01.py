@@ -127,11 +127,11 @@ class TestVersionChecking:
             assert "exceeds maximum 0.20.0" in error_msg
 
     def test_check_hermes_version_no_module(self):
-        """Should return error when Hermes module is not found."""
-        with patch.dict("sys.modules", {}, clear=False):
-            if "hermes" in sys.modules:
-                del sys.modules["hermes"]
-
+        """Should return error when Hermes runtime modules are not found."""
+        with patch(
+            "agentic_fieldbook.plugin._hermes_runtime_module",
+            side_effect=ImportError,
+        ):
             is_compatible, error_msg = _check_hermes_version()
             assert is_compatible is False
             assert "Hermes module not found" in error_msg
