@@ -31,6 +31,16 @@ class TestInstalledRootLayout:
         assert data["version"]  # non-empty
         assert data["kind"] == "standalone"
 
+    def test_root_version_matches_manifest(self):
+        import yaml
+        manifest = yaml.safe_load((REPO_ROOT / "plugin.yaml").read_text())
+        assert (REPO_ROOT / "VERSION").read_text().strip() == manifest["version"]
+
+    def test_skills_do_not_claim_independent_versions(self):
+        for skill_file in (REPO_ROOT / "skills").glob("*/SKILL.md"):
+            frontmatter = skill_file.read_text().split("---", 2)[1]
+            assert "\nversion:" not in frontmatter, skill_file
+
     def test_root_init_exposes_register(self):
         """Root __init__.py must expose a callable register(ctx)."""
         import importlib.util
@@ -88,3 +98,38 @@ class TestInstalledRootLayout:
         content = (tmp_path / "SOUL.md").read_text()
         assert "<!-- aos:begin -->" in content
         assert "<!-- aos:end -->" in content
+
+    def test_root_migrate_is_clean_noop(self, capsys):
+        """The Git-installed root entry point exposes the v0.1 migration no-op."""
+        import importlib.util
+        from argparse import Namespace
+
+        spec = importlib.util.spec_from_file_location(
+            "_root_fieldbook_migrate_check", REPO_ROOT / "__init__.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        assert mod._cmd_migrate(Namespace()) == 0
+        assert "migrate: no changes needed" in capsys.readouterr().out
+
+    def test_root_doctor_reports_detected_installed_bundle_version(self, tmp_path, capsys):
+        """Doctor must report VERSION from the installed bundle root, not source metadata."""
+        import importlib.util
+        from argparse import Namespace
+        import shutil
+
+        installed_root = tmp_path / "plugin"
+        shutil.copytree(REPO_ROOT, installed_root, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        (installed_root / "VERSION").write_text("9.9.9\n", encoding="utf-8")
+
+        spec = importlib.util.spec_from_file_location(
+            "_root_fieldbook_detected_version_check", REPO_ROOT / "__init__.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        assert mod._cmd_doctor(Namespace(plugin_root=str(installed_root))) == 0
+        assert "Agentic Fieldbook v9.9.9 doctor" in capsys.readouterr().out

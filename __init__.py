@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any
 
 PLUGIN_NAME = "agentic-fieldbook"
-PLUGIN_VERSION = "0.1.0"
+_VERSION_FILE = Path(__file__).with_name("VERSION")
+PLUGIN_VERSION = _VERSION_FILE.read_text(encoding="utf-8").strip()
 HERMES_COMPATIBILITY = {"min": "0.18.0", "max": "0.20.0"}
-EXPECTED_COMMANDS = ("setup", "doctor", "version")
+EXPECTED_COMMANDS = ("setup", "doctor", "version", "migrate")
 EXPECTED_SKILLS = {
     "lane-calibration", "planning-routing", "risk-taxonomy", "review-calibration",
     "stage-handoff", "contract-schema", "knowledge-lifecycle",
@@ -34,6 +35,7 @@ def _register_aos_cli(subparsers: Any) -> None:
     setup_parser.add_argument("--yes", action="store_true", help="accept SOUL.md changes")
     parsers.add_parser("doctor", help="Verify Agentic Fieldbook installation")
     parsers.add_parser("version", help="Show Agentic Fieldbook bundle version")
+    parsers.add_parser("migrate", help="Apply bundle migrations (v0.1: no-op)")
 
 
 def _handle_aos_command(args: Any) -> int:
@@ -41,6 +43,7 @@ def _handle_aos_command(args: Any) -> int:
     if subcommand == "setup": return _cmd_setup(args)
     if subcommand == "doctor": return _cmd_doctor(args)
     if subcommand == "version": return _cmd_version(args)
+    if subcommand == "migrate": return _cmd_migrate(args)
     print(f"Unknown aos subcommand: {subcommand}")
     return 1
 
@@ -140,6 +143,15 @@ def _skills_toolset_available(hermes: Any) -> bool:
 def _plugin_root(args: Any = None) -> Path:
     override = getattr(args, "plugin_root", None) if args is not None else None
     return Path(override or os.environ.get("AGENTIC_FIELD_BOOK_PLUGIN_ROOT", Path(__file__).parent)).resolve()
+
+
+def _bundle_version(root: Path) -> str:
+    """Read the coupled bundle version from the installed plugin root."""
+    try:
+        version = (root / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return PLUGIN_VERSION
+    return version or PLUGIN_VERSION
 
 
 def _skills(root: Path) -> list[Path]:
@@ -287,7 +299,7 @@ def _doctor_failures(root: Path) -> list[str]:
 def _cmd_doctor(args: Any) -> int:
     root = _plugin_root(args)
     failures = _doctor_failures(root)
-    print(f"Agentic Fieldbook v{PLUGIN_VERSION} doctor")
+    print(f"Agentic Fieldbook v{_bundle_version(root)} doctor")
     if failures:
         print(f"FAIL: {len(failures)} named check(s) failed")
         for failure in failures: print(f"- {failure}")
@@ -299,6 +311,10 @@ def _cmd_doctor(args: Any) -> int:
 def _cmd_version(args: Any) -> int:
     print(f"Agentic Fieldbook v{PLUGIN_VERSION}")
     print(f"Hermes compatibility: {HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}")
+    return 0
+def _cmd_migrate(args: Any) -> int:
+    """Run bundle migrations; v0.1 intentionally has nothing to migrate."""
+    print(f"Agentic Fieldbook v{_bundle_version(_plugin_root(args))} migrate: no changes needed")
     return 0
 
 

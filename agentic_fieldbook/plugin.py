@@ -16,7 +16,7 @@ import re
 from typing import Any
 
 PLUGIN_NAME = "agentic-fieldbook"
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = (Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
 HERMES_COMPATIBILITY = {"min": "0.18.0", "max": "0.20.0"}
 
 
@@ -109,6 +109,10 @@ def _register_aos_cli(subparsers: Any) -> None:
         "version",
         help="Show Agentic Fieldbook bundle version",
     )
+    aos_subparsers.add_parser(
+        "migrate",
+        help="Apply bundle migrations (v0.1: no-op)",
+    )
 
 
 def _handle_aos_command(args: Any) -> int:
@@ -125,6 +129,8 @@ def _handle_aos_command(args: Any) -> int:
         return _cmd_doctor(args)
     elif subcommand == "version":
         return _cmd_version(args)
+    elif subcommand == "migrate":
+        return _cmd_migrate(args)
     else:
         print(f"Unknown aos subcommand: {subcommand}")
         return 1
@@ -211,6 +217,12 @@ def _cmd_version(args: Any) -> int:
     """Print bundle version and compatibility range."""
     print(f"Agentic Fieldbook v{PLUGIN_VERSION}")
     print(f"Hermes compatibility: {HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}")
+    return 0
+
+
+def _cmd_migrate(args: Any) -> int:
+    """Run bundle migrations; v0.1 intentionally has nothing to migrate."""
+    print(f"Agentic Fieldbook v{PLUGIN_VERSION} migrate: no changes needed")
     return 0
 
 

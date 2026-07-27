@@ -1,7 +1,6 @@
 ---
 name: lane-calibration
 description: "Lane calibration for autonomous agents — track empirical performance per model, toolset, and task risk. New lanes start uncalibrated and are restricted to discovery and low-risk pilots until evidence exists."
-version: 0.1.0
 author: "Jay Stothard <jtstothard@gmail.com>"
 license: MIT
 metadata:
