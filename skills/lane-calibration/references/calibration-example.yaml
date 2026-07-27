@@ -1,0 +1,89 @@
+# Lane Calibration Example — Synthetic Worked Example
+#
+# This is a fabricated, illustrative example. ALL identifiers below are
+# synthetic and do NOT represent real lanes, models, tasks, or systems.
+# Do not copy lane IDs, task IDs, or model configurations into your real
+# calibration records. Use the blank template (calibration-template.yaml)
+# for your actual data.
+
+---
+lane_id: "planner-claude-sonnet-4-full"
+calibration_status: trusted
+trusted_risk_class: "high"
+
+model: "claude-sonnet-4"
+provider: "anthropic"
+quantization: "none"
+toolset: "web,terminal,file,code_execution,kanban"
+
+created_at: "2026-01-10T09:00:00Z"
+calibrated_at: "2026-01-15T10:30:00Z"
+trusted_at: "2026-01-20T14:00:00Z"
+
+pilot_tasks:
+  - task_id: "pilot-fake-001"
+    task_type: "discovery"
+    task_summary: "Explore and document project structure for a new Python codebase"
+    started_at: "2026-01-12T09:15:00Z"
+    completed_at: "2026-01-12T09:27:00Z"
+    duration_seconds: 720
+    outcome: passed
+    notes: "Accurately mapped 4 modules and 2 entry points. No hallucinations."
+
+  - task_id: "pilot-fake-002"
+    task_type: "refactor"
+    task_summary: "Extract duplicate validation logic into a shared utility module"
+    started_at: "2026-01-13T14:00:00Z"
+    completed_at: "2026-01-13T14:18:00Z"
+    duration_seconds: 1080
+    outcome: passed
+    notes: "Clean extraction, all 3 call sites updated, tests pass."
+
+  - task_id: "pilot-fake-003"
+    task_type: "documentation"
+    task_summary: "Write API reference documentation for the utility module"
+    started_at: "2026-01-14T10:30:00Z"
+    completed_at: "2026-01-14T10:52:00Z"
+    duration_seconds: 1320
+    outcome: passed
+    notes: "Accurate docs, included examples, no missing parameters."
+
+  - task_id: "pilot-fake-004"
+    task_type: "refactor"
+    task_summary: "Add type hints to the utility module"
+    started_at: "2026-01-15T09:00:00Z"
+    completed_at: "2026-01-15T09:25:00Z"
+    duration_seconds: 1500
+    outcome: passed
+    notes: "Comprehensive type hints, mypy reports zero errors."
+
+  - task_id: "pilot-fake-005"
+    task_type: "discovery"
+    task_summary: "Review test coverage and identify gaps"
+    started_at: "2026-01-15T11:00:00Z"
+    completed_at: "2026-01-15T11:12:00Z"
+    duration_seconds: 720
+    outcome: passed
+    notes: "Identified 3 untested edge cases, prioritized for follow-up."
+
+evidence_summary: |
+  5/5 pilots passed with consistent performance across task types (discovery, refactor, documentation).
+  Mean duration: 16.8 minutes. No failures, no timeouts, no hallucinations.
+  This lane demonstrates strong reliability for medium-to-high complexity planning and refactoring work.
+
+last_verified_at: "2026-01-20T14:00:00Z"
+staleness_months: 0
+
+fallback_for: null
+
+notes: |
+  This lane was calibrated using a synthetic worked example for documentation purposes.
+  All task IDs and outcomes above are fabricated. Real calibration requires actual
+  pilot tasks with real execution results.
+
+  Strengths observed:
+  - Accurate codebase exploration without hallucination
+  - Clean refactor patterns with test preservation
+  - Clear, accurate documentation generation
+
+  Calibration basis: 5 controlled pilots covering representative patterns for planning tasks.

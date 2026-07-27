@@ -1,0 +1,138 @@
+"$schema": "https://json-schema.org/draft/2020-12/schema"
+title: "Lane Calibration Record"
+description: |
+  Schema for tracking empirical calibration evidence per lane (model + toolset + provider + quantization).
+  New lanes begin uncalibrated and must complete controlled pilots before being assigned trusted risk classes.
+
+type: object
+required:
+  - lane_id
+  - calibration_status
+  - model
+  - provider
+  - quantization
+  - created_at
+
+properties:
+  lane_id:
+    type: string
+    description: "Unique identifier for this lane (e.g., 'planner-claude-sonnet-4-full')"
+
+  calibration_status:
+    type: string
+    enum: [uncalibrated, in_progress, calibrated, trusted]
+    description: |
+      - uncalibrated: New lane, no pilot evidence yet
+      - in_progress: Pilots in progress
+      - calibrated: Sufficient pilot evidence, no risk class yet
+      - trusted: Risk class assigned, lane is production-ready
+
+  trusted_risk_class:
+    type: string
+    enum: [low, medium, high]
+    description: "Risk class assigned after calibration (null for uncalibrated/in_progress)"
+    nullable: true
+
+  model:
+    type: string
+    description: "Model identifier (e.g., 'claude-sonnet-4', 'gpt-4o-mini')"
+
+  provider:
+    type: string
+    description: "Model provider (e.g., 'anthropic', 'openrouter', 'openai')"
+
+  quantization:
+    type: string
+    description: "Quantization format (e.g., 'FP16', 'INT4', 'none')"
+    default: "none"
+
+  toolset:
+    type: string
+    description: "Hermes toolset bundle used (e.g., 'web,terminal,file,code_execution')"
+
+  created_at:
+    type: string
+    format: date-time
+    description: "ISO 8601 timestamp when this lane record was created"
+
+  calibrated_at:
+    type: string
+    format: date-time
+    description: "ISO 8601 timestamp when lane was promoted to calibrated"
+    nullable: true
+
+  trusted_at:
+    type: string
+    format: date-time
+    description: "ISO 8601 timestamp when risk class was assigned"
+    nullable: true
+
+  pilot_tasks:
+    type: array
+    description: "Controlled pilot tasks with outcomes"
+    items:
+      type: object
+      required:
+        - task_id
+        - task_type
+        - started_at
+        - completed_at
+        - outcome
+      properties:
+        task_id:
+          type: string
+          description: "Task identifier (e.g., 'pilot-001', 't_abc123')"
+
+        task_type:
+          type: string
+          description: "Task category (e.g., 'discovery', 'refactor', 'documentation')"
+
+        task_summary:
+          type: string
+          description: "Brief description of the pilot task"
+
+        started_at:
+          type: string
+          format: date-time
+
+        completed_at:
+          type: string
+          format: date-time
+
+        duration_seconds:
+          type: integer
+          description: "Task duration in seconds"
+
+        outcome:
+          type: string
+          enum: [passed, failed, partial, timeout]
+          description: "Pilot outcome"
+
+        notes:
+          type: string
+          description: "Qualitative observations (errors, patterns, surprises)"
+
+  evidence_summary:
+    type: string
+    description: "Textual summary of calibration evidence and patterns"
+
+  last_verified_at:
+    type: string
+    format: date-time
+    description: "ISO 8601 timestamp of last verification check"
+
+  staleness_months:
+    type: number
+    description: "Months since last trusted calibration (triggers recalibration when >6)"
+    minimum: 0
+
+  fallback_for:
+    type: string
+    description: "If this is a fallback lane, reference the primary lane_id"
+    nullable: true
+
+  notes:
+    type: string
+    description: "Free-form notes about this lane"
+
+additionalProperties: false
