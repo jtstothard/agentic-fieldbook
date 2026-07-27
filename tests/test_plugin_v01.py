@@ -80,6 +80,13 @@ class TestCommandStubs:
         assert result == 0
         assert "migrate: no changes needed" in captured.out
 
+    def test_migrate_command_is_idempotent(self, capsys):
+        first = _cmd_migrate(Namespace())
+        first_output = capsys.readouterr().out
+        second = _cmd_migrate(Namespace())
+        second_output = capsys.readouterr().out
+        assert (first, first_output) == (second, second_output)
+
 
 class TestVersionChecking:
     """Test Hermes version checking logic."""
