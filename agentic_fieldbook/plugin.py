@@ -11,6 +11,7 @@ Hermes plugin APIs confirmation.
 
 import sys
 import os
+import subprocess
 from pathlib import Path
 import re
 from typing import Any
@@ -198,10 +199,24 @@ def _cmd_setup(args: Any) -> int:
         print(f"Inserted managed instructions into {soul}")
     print("Running doctor...")
     doctor_result = _cmd_doctor(args)
-    if doctor_result == 0 and _gateway_is_running():
-        print()
-        print("Restart the gateway for the plugin to take effect:")
-        print("  hermes gateway restart")
+
+    # Profile-aware gateway messaging
+    profile = _get_hermes_profile()
+    if doctor_result == 0:
+        if _profile_has_gateway(profile):
+            # Gateway profile
+            if _gateway_is_running_for_profile(profile):
+                print()
+                print("Restart the gateway for the plugin to take effect:")
+                print("  hermes gateway restart")
+            else:
+                print()
+                print("Start the gateway for the plugin to take effect:")
+                print("  hermes gateway start")
+        else:
+            # Non-gateway profile (CLI/worker/TUI)
+            print()
+            print("Setup complete. The plugin is active for the next CLI/worker invocation.")
     return doctor_result
 
 
@@ -224,15 +239,99 @@ def _hermes_runtime_module() -> Any:
         return hermes_cli
 
 
+def _get_hermes_profile() -> str | None:
+    """Get the target Hermes profile name from environment.
+
+    Returns None if running in the default profile or profile cannot be determined.
+    """
+    # HERMES_PROFILE is set when using -p/--profile flag
+    profile = os.environ.get("HERMES_PROFILE")
+    if profile and profile != "default":
+        return profile
+
+    # Check if HERMES_HOME points to a profile-specific directory
+    hermes_home = os.environ.get("HERMES_HOME", "")
+    if "/profiles/" in hermes_home:
+        # Extract profile name from path like ~/.hermes/profiles/coder
+        parts = Path(hermes_home).parts
+        if "profiles" in parts:
+            idx = parts.index("profiles")
+            if idx + 1 < len(parts):
+                profile_name = parts[idx + 1]
+                if profile_name != "default":
+                    return profile_name
+
+    return None
+
+
+def _profile_has_gateway(profile: str | None) -> bool:
+    """Check if a profile has gateway configured.
+
+    Uses hermes profile show to determine if the profile runs a gateway.
+    Returns False if profile is None (default profile may have gateway but we assume no).
+
+    This is profile-scoped: it checks the target profile's config, not inherited env vars.
+    """
+    if profile is None:
+        # Default profile or couldn't determine profile - assume no gateway for safety
+        return False
+
+    try:
+        result = subprocess.run(
+            ["hermes", "profile", "show", profile],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+
+        # hermes profile show output includes "Gateway: running" or "Gateway: stopped"
+        # Any gateway status means the profile has gateway configured
+        return "Gateway:" in result.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return False
+
+
+def _gateway_is_running_for_profile(profile: str | None) -> bool:
+    """Check if gateway is currently running for the target profile.
+
+    This is the profile-aware version of _gateway_is_running.
+    It combines:
+    1. Profile config check (does this profile have a gateway?)
+    2. Runtime check (is that gateway actually running?)
+
+    This prevents false positives from env var bleed when running:
+      hermes -p <dogfood> aos setup
+
+    where the parent gateway process leaks env vars but the target profile
+    is non-gateway (CLI/worker/TUI).
+    """
+    # First check: does this profile even have a gateway configured?
+    if not _profile_has_gateway(profile):
+        return False
+
+    # Second check: is a gateway actually running (env vars as fallback)
+    # This handles the case where the profile has gateway but it's stopped
+    gateway_indicators = [
+        "HERMES_GATEWAY_BUSY_INPUT_MODE",
+        "HERMES_DASHBOARD_PORT",
+        "HERMES_GATEWAY_PORT",
+    ]
+    return any(indicator in os.environ for indicator in gateway_indicators)
+
+
 def _gateway_is_running() -> bool:
     """Detect if Hermes gateway is running for this profile.
 
     Checks for gateway-related environment variables that indicate
     a gateway session. Non-gateway profiles (CLI-only, dogfood, TUI)
     won't have these set.
+
+    DEPRECATED: This function is NOT profile-aware. Use _gateway_is_running_for_profile
+    instead to avoid false positives from env var bleed.
+    Kept for backward compatibility with existing tests.
     """
-    # HERMES_GATEWAY_BUSY_INPUT_MODE is set in gateway sessions
-    # HERMES_DASHBOARD_PORT indicates gateway web interface
     gateway_indicators = [
         "HERMES_GATEWAY_BUSY_INPUT_MODE",
         "HERMES_DASHBOARD_PORT",
