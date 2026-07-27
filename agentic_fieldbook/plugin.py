@@ -10,6 +10,8 @@ Hermes plugin APIs confirmation.
 """
 
 import sys
+import os
+from pathlib import Path
 import re
 from typing import Any
 
@@ -90,10 +92,11 @@ def _register_aos_cli(subparsers: Any) -> None:
     )
 
     # setup subcommand (stub with real version check)
-    aos_subparsers.add_parser(
+    setup_parser = aos_subparsers.add_parser(
         "setup",
-        help="Set up Agentic Fieldbook (v0.1: version check only)",
+        help="Set up Agentic Fieldbook",
     )
+    setup_parser.add_argument("--yes", action="store_true", help="accept SOUL.md changes")
 
     # doctor subcommand (stub)
     aos_subparsers.add_parser(
@@ -128,7 +131,7 @@ def _handle_aos_command(args: Any) -> int:
 
 
 def _cmd_setup(args: Any) -> int:
-    """Setup command with Hermes version check (v0.1)."""
+    """Activate the bundle after validating the host and obtaining consent."""
     is_compatible, error_msg = _check_hermes_version()
 
     if not is_compatible:
@@ -140,11 +143,50 @@ def _cmd_setup(args: Any) -> int:
         )
         return 1
 
+    try:
+        import hermes
+    except ImportError:
+        print("ERROR: Hermes is unavailable; setup must be run from Hermes", file=sys.stderr)
+        return 1
+    if os.environ.get("AOS_SKILLS_TOOLSET_DISABLED") == "1":
+        print("ERROR: Hermes skills toolset is disabled; enable it before setup", file=sys.stderr)
+        return 1
+    if not _skills_toolset_available(hermes):
+        print("ERROR: Hermes skills toolset is unavailable; enable it before setup", file=sys.stderr)
+        return 1
+
     print(f"Agentic Fieldbook v{PLUGIN_VERSION} setup")
     print(f"Compatible with Hermes {HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}")
-    print("Full setup implementation will be added in later tickets.")
-    print("This stub proves version checking; real installation logic coming soon.")
-    return 0
+    soul = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
+    begin, end = "<!-- aos:begin -->", "<!-- aos:end -->"
+    existing = soul.read_text(encoding="utf-8") if soul.exists() else ""
+    if begin in existing and end in existing:
+        print(f"SOUL.md already contains the managed block: {soul}")
+    else:
+        if not getattr(args, "yes", False) and not sys.stdin.isatty():
+            print("ERROR: setup requires --yes when stdin is not a TTY", file=sys.stderr)
+            return 1
+        if not getattr(args, "yes", False):
+            answer = input("Insert Agentic Fieldbook instructions into SOUL.md? [y/N] ")
+            if answer.strip().lower() not in {"y", "yes"}:
+                print("Setup cancelled; SOUL.md was not modified.")
+                return 1
+        block = f"{begin}\n\nAgentic Fieldbook skills are available for agent workflows.\n\n{end}\n"
+        separator = "\n" if existing and not existing.endswith("\n") else ""
+        soul.parent.mkdir(parents=True, exist_ok=True)
+        soul.write_text(existing + separator + block, encoding="utf-8")
+        print(f"Inserted managed instructions into {soul}")
+    print("Running doctor...")
+    return _cmd_doctor(args)
+
+
+def _skills_toolset_available(hermes: Any) -> bool:
+    """Best-effort compatibility check for Hermes' skills toolset."""
+    tools = getattr(hermes, "tools", None)
+    if tools is None:
+        return True  # older Hermes exposes tools through the runtime, not module attrs
+    enabled = getattr(tools, "skills", None)
+    return enabled is not False
 
 
 def _cmd_doctor(args: Any) -> int:

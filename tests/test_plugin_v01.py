@@ -5,6 +5,8 @@ These are stub-level tests that verify the commands are registered and respond.
 Full runtime verification and skill loading tests will be added in later tickets.
 """
 
+import os
+import tempfile
 import pytest
 from unittest.mock import MagicMock, patch
 from argparse import Namespace
@@ -24,6 +26,7 @@ from agentic_fieldbook.plugin import (
     plugin_info,
     _parse_version,
     _check_hermes_version,
+    _skills_toolset_available,
 )
 
 
@@ -31,18 +34,27 @@ class TestCommandStubs:
     """Test that stub commands are callable and return expected outputs."""
 
     def test_setup_command_returns_zero(self, capsys):
-        """Setup command stub should print message and return 0 (when Hermes is compatible)."""
+        """Setup command should succeed when Hermes is compatible and --yes is passed."""
         # Mock Hermes as compatible for this test
         from unittest.mock import MagicMock
         import sys
         mock_hermes = MagicMock()
         mock_hermes.__version__ = "0.19.0"
+        import tempfile
+        import os
+        from pathlib import Path
 
-        with patch.dict("sys.modules", {"hermes": mock_hermes}):
-            result = _cmd_setup(Namespace())
-            captured = capsys.readouterr()
-            assert result == 0
-            assert "Agentic Fieldbook" in captured.out
+        with tempfile.TemporaryDirectory() as tmpdir:
+            soul_path = Path(tmpdir) / "SOUL.md"
+            os.environ["HERMES_HOME"] = tmpdir
+            with patch.dict("sys.modules", {"hermes": mock_hermes}):
+                with patch("agentic_fieldbook.plugin._cmd_doctor") as mock_doctor:
+                    mock_doctor.return_value = 0
+                    result = _cmd_setup(Namespace(yes=True))
+                    captured = capsys.readouterr()
+                    assert result == 0
+                    assert "Agentic Fieldbook" in captured.out
+                    assert "Inserted managed instructions" in captured.out
 
     def test_doctor_command_returns_zero(self, capsys):
         """Doctor command stub should print message and return 0."""
@@ -135,19 +147,22 @@ class TestVersionChecking:
             assert is_compatible is False
             assert "__version__ not found" in error_msg
 
-    def test_setup_command_passes_version_check(self, capsys):
+    def test_setup_command_passes_version_check(self, capsys, tmp_path, monkeypatch):
         """Setup should succeed when Hermes version is compatible."""
         from unittest.mock import MagicMock
 
         mock_hermes = MagicMock()
         mock_hermes.__version__ = "0.19.0"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         with patch.dict("sys.modules", {"hermes": mock_hermes}):
-            result = _cmd_setup(Namespace())
-            captured = capsys.readouterr()
-            assert result == 0
-            assert "Agentic Fieldbook v0.1.0 setup" in captured.out
-            assert "0.18.0–0.20.0" in captured.out
+            with patch("agentic_fieldbook.plugin._cmd_doctor") as mock_doctor:
+                mock_doctor.return_value = 0
+                result = _cmd_setup(Namespace(yes=True))
+                captured = capsys.readouterr()
+                assert result == 0
+                assert "Agentic Fieldbook v0.1.0 setup" in captured.out
+                assert "0.18.0–0.20.0" in captured.out
 
     def test_setup_command_fails_below_floor(self, capsys):
         """Setup should fail when Hermes version is below floor."""
@@ -157,7 +172,7 @@ class TestVersionChecking:
         mock_hermes.__version__ = "0.17.0"
 
         with patch.dict("sys.modules", {"hermes": mock_hermes}):
-            result = _cmd_setup(Namespace())
+            result = _cmd_setup(Namespace(yes=True))
             captured = capsys.readouterr()
             assert result != 0
             assert "ERROR" in captured.err
@@ -172,7 +187,7 @@ class TestVersionChecking:
         mock_hermes.__version__ = "0.21.0"
 
         with patch.dict("sys.modules", {"hermes": mock_hermes}):
-            result = _cmd_setup(Namespace())
+            result = _cmd_setup(Namespace(yes=True))
             captured = capsys.readouterr()
             assert result != 0
             assert "ERROR" in captured.err
