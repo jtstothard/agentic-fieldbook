@@ -31,6 +31,16 @@ class TestInstalledRootLayout:
         assert data["version"]  # non-empty
         assert data["kind"] == "standalone"
 
+    def test_root_version_matches_manifest(self):
+        import yaml
+        manifest = yaml.safe_load((REPO_ROOT / "plugin.yaml").read_text())
+        assert (REPO_ROOT / "VERSION").read_text().strip() == manifest["version"]
+
+    def test_skills_do_not_claim_independent_versions(self):
+        for skill_file in (REPO_ROOT / "skills").glob("*/SKILL.md"):
+            frontmatter = skill_file.read_text().split("---", 2)[1]
+            assert "\nversion:" not in frontmatter, skill_file
+
     def test_root_init_exposes_register(self):
         """Root __init__.py must expose a callable register(ctx)."""
         import importlib.util

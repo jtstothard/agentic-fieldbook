@@ -21,6 +21,7 @@ from agentic_fieldbook.plugin import (
     _cmd_setup,
     _cmd_doctor,
     _cmd_version,
+    _cmd_migrate,
     _handle_aos_command,
     _register_aos_cli,
     plugin_info,
@@ -72,6 +73,12 @@ class TestCommandStubs:
         assert "0.1.0" in captured.out
         assert "Hermes compatibility" in captured.out
         assert "0.18.0–0.20.0" in captured.out
+
+    def test_migrate_command_is_clean_noop(self, capsys):
+        result = _cmd_migrate(Namespace())
+        captured = capsys.readouterr()
+        assert result == 0
+        assert "migrate: no changes needed" in captured.out
 
 
 class TestVersionChecking:
@@ -252,14 +259,15 @@ class TestPluginMetadata:
 
         _register_aos_cli(mock_subparsers)
 
-        # Verify three subcommands were added (setup, doctor, version)
-        assert mock_aos_subparsers.add_parser.call_count == 3
+        # Verify four subcommands were added (setup, doctor, version, migrate)
+        assert mock_aos_subparsers.add_parser.call_count == 4
 
         # Verify subcommand names
         call_args = [call[0][0] for call in mock_aos_subparsers.add_parser.call_args_list]
         assert "setup" in call_args
         assert "doctor" in call_args
         assert "version" in call_args
+        assert "migrate" in call_args
 
 
 class TestSkillArtifacts:
@@ -400,6 +408,12 @@ class TestBundleVersioning:
 
 class TestDoctorDetection:
     """Test that doctor can detect skill presence (v0.1 stub)."""
+
+    def test_doctor_reports_detected_bundle_version(self, capsys):
+        result = _cmd_doctor(Namespace())
+        captured = capsys.readouterr()
+        assert result == 0
+        assert "Agentic Fieldbook v0.1.0 doctor" in captured.out
 
     def test_doctor_stub_detects_plugin(self, capsys):
         """Doctor stub should indicate it detects the plugin."""
