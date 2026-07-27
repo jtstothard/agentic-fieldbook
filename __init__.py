@@ -56,7 +56,7 @@ def _cmd_setup(args: Any) -> int:
         )
         return 1
     try:
-        import hermes
+        hermes = _hermes_runtime_module()
     except ImportError:
         print("ERROR: Hermes is unavailable; setup must be run from Hermes", file=sys.stderr)
         return 1
@@ -101,7 +101,7 @@ def _parse_version(version_str: str) -> tuple[int, int, int]:
 
 def _check_hermes_version() -> tuple[bool, str]:
     try:
-        import hermes
+        hermes = _hermes_runtime_module()
         version_str = getattr(hermes, "__version__", None)
         if not version_str:
             return False, "Cannot determine Hermes version: __version__ not found"
@@ -117,6 +117,16 @@ def _check_hermes_version() -> tuple[bool, str]:
         return False, "Hermes module not found (running outside Hermes?)"
     except Exception as exc:
         return False, f"Version check error: {exc}"
+
+
+def _hermes_runtime_module() -> Any:
+    """Return the supported Hermes runtime module across CLI distributions."""
+    try:
+        import hermes
+        return hermes
+    except ImportError:
+        import hermes_cli
+        return hermes_cli
 
 
 def _skills_toolset_available(hermes: Any) -> bool:

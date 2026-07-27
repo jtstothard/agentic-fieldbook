@@ -35,7 +35,7 @@ def _check_hermes_version() -> tuple[bool, str]:
     Returns (is_compatible, error_message).
     """
     try:
-        import hermes
+        hermes = _hermes_runtime_module()
         hermes_version_str = getattr(hermes, "__version__", None)
         if not hermes_version_str:
             return False, "Cannot determine Hermes version: __version__ not found"
@@ -144,7 +144,7 @@ def _cmd_setup(args: Any) -> int:
         return 1
 
     try:
-        import hermes
+        hermes = _hermes_runtime_module()
     except ImportError:
         print("ERROR: Hermes is unavailable; setup must be run from Hermes", file=sys.stderr)
         return 1
@@ -187,6 +187,16 @@ def _skills_toolset_available(hermes: Any) -> bool:
         return True  # older Hermes exposes tools through the runtime, not module attrs
     enabled = getattr(tools, "skills", None)
     return enabled is not False
+
+
+def _hermes_runtime_module() -> Any:
+    """Return the supported Hermes runtime module across CLI distributions."""
+    try:
+        import hermes
+        return hermes
+    except ImportError:
+        import hermes_cli
+        return hermes_cli
 
 
 def _cmd_doctor(args: Any) -> int:

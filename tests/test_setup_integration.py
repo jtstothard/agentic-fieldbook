@@ -31,9 +31,11 @@ class TestSetupPrerequisites:
         # Mock version check to pass, then mock hermes import to fail
         with patch("agentic_fieldbook.plugin._check_hermes_version") as mock_check:
             mock_check.return_value = (True, "")
-            # Remove hermes from sys.modules to simulate unavailability
-            monkeypatch.delenv("HERMES_HOME", raising=False)
-            result = _cmd_setup(Namespace())
+            with patch(
+                "agentic_fieldbook.plugin._hermes_runtime_module",
+                side_effect=ImportError,
+            ):
+                result = _cmd_setup(Namespace(yes=True))
             captured = capsys.readouterr()
             assert result != 0
             assert "ERROR: Hermes is unavailable" in captured.err
