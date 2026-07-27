@@ -44,6 +44,83 @@ Recalibration triggers:
 skill_view(name="lane-calibration", file_path="references/recalibration-triggers.md")
 ```
 
+## First pilot onboarding
+
+Your first AOS lifecycle task on an uncalibrated lane follows a structured path.
+
+### Step 1: Choose your first pilot task
+
+Pick a real but low-risk task:
+- Has clear success/failure criteria (not open-ended exploration)
+- Can be rolled back or reverted (git reset, file deletion, config revert)
+- Represents the lane's intended workload (not synthetic toy examples)
+- Is timeboxed (30-60 minutes for the first run)
+
+Good first pilots: file edits, simple refactors, documentation updates, low-stakes config changes.
+Bad first pilots: production deployments, schema migrations, permission changes, external API writes.
+
+### Step 2: Configure lane record
+
+Create your lane record with `calibration_status: uncalibrated` and empty `pilot_tasks`:
+```yaml
+lane_id: "your-lane-identifier"
+model: "your-model"
+provider: "your-provider"
+quantization: "your-quantization"
+calibration_status: uncalibrated
+trusted_risk_class: null
+pilot_tasks: []
+```
+
+### Step 3: Run the pilot and collect evidence
+
+Execute the pilot task. While running, collect:
+- **Timing**: start time, end time, duration
+- **Tool usage**: which tools were called, how many times, any failures
+- **Outcome**: success/failure, what was produced, errors or blockers
+- **Observations**: tool behavior quality, response latency, any anomalies
+
+Record the result in `pilot_tasks`:
+```yaml
+pilot_tasks:
+  - task_id: "task-001"
+    task_description: "First pilot: file edit on low-risk file"
+    started_at: "2026-01-15T09:00:00Z"
+    completed_at: "2026-01-15T09:12:00Z"
+    duration_seconds: 720
+    success: true
+    tools_used: ["read_file", "patch", "terminal"]
+    outcome: "Completed file edit successfully, no errors"
+    observations: "Response quality good, tool usage appropriate, no hallucinations"
+```
+
+### Step 4: Assess the pilot result
+
+Ask:
+- Did the lane complete the task without human intervention?
+- Were the tool calls appropriate and correct?
+- Was the output quality acceptable?
+- Were there any unexpected behaviors or errors?
+
+If any answer is "no", run additional pilots or investigate before promoting.
+
+### Step 5: Write your first calibration record
+
+After 3-5 successful pilots, promote the lane:
+```yaml
+calibration_status: calibrated
+calibrated_at: "2026-01-20T14:00:00Z"
+evidence_summary: "4/4 pilots passed, 0 failures, mean_duration: 10m, tool_errors: 0"
+trusted_risk_class: "low"
+trusted_at: "2026-01-20T14:00:00Z"
+```
+
+The first calibration should always be `trusted_risk_class: low`. Higher risk classes require more extensive evidence.
+
+### Step 6: Monitor and iterate
+
+Track subsequent tasks in the lane. If failures or anomalies emerge, downgrade the lane and re-run pilots.
+
 ## Calibration lifecycle
 
 ```
