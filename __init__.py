@@ -1,77 +1,210 @@
-"""Agentic Fieldbook — repo-root plugin entry point for Hermes Git-install.
+"""Repo-root Hermes plugin entry point (self-contained for git installs)."""
 
-Hermes's ``plugins install`` clones this repository into
-``~/.hermes/plugins/<name>/`` and loads the installed directory root as the
-plugin module. The loader does **not** put the plugin directory itself on
-``sys.path``, so a sibling package (``agentic_fieldbook/``) is not importable
-from the root ``__init__.py``. Therefore ``register(ctx)`` and its helpers are
-defined here directly (self-contained), and the ``agentic_fieldbook`` package
-remains available for tests and pip installs.
-"""
+from __future__ import annotations
 
+import inspect
+import os
+import re
+import sys
+from pathlib import Path
 from typing import Any
 
 PLUGIN_NAME = "agentic-fieldbook"
 PLUGIN_VERSION = "0.1.0"
 HERMES_COMPATIBILITY = ">=0.18.0"
-
+EXPECTED_COMMANDS = ("setup", "doctor", "version")
+EXPECTED_SKILLS = {
+    "lane-calibration", "planning-routing", "risk-taxonomy", "review-calibration",
+    "stage-handoff", "contract-schema", "knowledge-lifecycle",
+}
 __version__ = PLUGIN_VERSION
 
 
 def register(ctx: Any) -> None:
-    """Register the ``hermes aos`` command group with Hermes.
-
-    Called once by the plugin loader when the plugin is enabled via
-    ``plugins.enabled`` in config.yaml.
-    """
     ctx.register_cli_command(
-        name="aos",
-        help="Agentic Fieldbook commands (v0.1 stub)",
-        setup_fn=_register_aos_cli,
+        name="aos", help="Agentic Fieldbook commands", setup_fn=_register_aos_cli,
         handler_fn=_handle_aos_command,
-        description=(
-            "Agentic Fieldbook v0.1 — setup, doctor, and version commands. "
-            "Stub implementations; full functionality in later tickets."
-        ),
+        description="Agentic Fieldbook — setup, doctor, and version commands.",
     )
 
 
 def _register_aos_cli(subparsers: Any) -> None:
-    """Set up the ``hermes aos`` argument parser structure."""
-    aos_subparsers = subparsers.add_subparsers(
-        dest="aos_subcommand",
-        title="subcommands",
-        required=True,
-    )
-    aos_subparsers.add_parser("setup", help="Set up Agentic Fieldbook (v0.1: stub)")
-    aos_subparsers.add_parser("doctor", help="Verify Agentic Fieldbook installation (v0.1: stub)")
-    aos_subparsers.add_parser("version", help="Show Agentic Fieldbook bundle version")
+    parsers = subparsers.add_subparsers(dest="aos_subcommand", title="subcommands", required=True)
+    parsers.add_parser("setup", help="Set up Agentic Fieldbook")
+    parsers.add_parser("doctor", help="Verify Agentic Fieldbook installation")
+    parsers.add_parser("version", help="Show Agentic Fieldbook bundle version")
 
 
 def _handle_aos_command(args: Any) -> int:
-    """Dispatch ``hermes aos <subcommand>``."""
     subcommand = getattr(args, "aos_subcommand", None)
-    if subcommand == "setup":
-        return _cmd_setup(args)
-    if subcommand == "doctor":
-        return _cmd_doctor(args)
-    if subcommand == "version":
-        return _cmd_version(args)
+    if subcommand == "setup": return _cmd_setup(args)
+    if subcommand == "doctor": return _cmd_doctor(args)
+    if subcommand == "version": return _cmd_version(args)
     print(f"Unknown aos subcommand: {subcommand}")
     return 1
 
 
 def _cmd_setup(args: Any) -> int:
     print(f"Agentic Fieldbook v{PLUGIN_VERSION} setup — stub")
-    print("Full setup implementation will be added in later tickets.")
-    print("This stub proves command registration; real installation logic coming soon.")
     return 0
 
 
+def _plugin_root(args: Any = None) -> Path:
+    override = getattr(args, "plugin_root", None) if args is not None else None
+    return Path(override or os.environ.get("AGENTIC_FIELD_BOOK_PLUGIN_ROOT", Path(__file__).parent)).resolve()
+
+
+def _skills(root: Path) -> list[Path]:
+    directory = root / "skills"
+    return sorted(p for p in directory.iterdir() if p.is_dir()) if directory.is_dir() else []
+
+
+def _frontmatter(path: Path) -> tuple[dict[str, Any], str]:
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        raise ValueError("missing YAML frontmatter")
+    end = text.find("\n---", 3)
+    if end < 0:
+        raise ValueError("unterminated YAML frontmatter")
+    import yaml
+    data = yaml.safe_load(text[3:end])
+    if not isinstance(data, dict):
+        raise ValueError("frontmatter is not a mapping")
+    return data, text[end + 4:]
+
+
+def _check_skill_loadability(root: Path) -> list[str]:
+    failures = []
+    skills = _skills(root)
+    if not skills:
+        return ["skills-loadability: skills directory is missing or empty"]
+    for directory in skills:
+        path = directory / "SKILL.md"
+        try:
+            data, _ = _frontmatter(path)
+            for field in ("name", "description"):
+                if not data.get(field): failures.append(f"skills-loadability: {directory.name}/SKILL.md missing {field}")
+            if data.get("name") != directory.name:
+                failures.append(f"skills-loadability: {directory.name}/SKILL.md name is {data.get('name')!r}")
+        except Exception as exc:
+            failures.append(f"skills-loadability: {directory.name}/SKILL.md ({exc})")
+    return failures
+
+
+def _check_references(root: Path) -> list[str]:
+    failures = []
+    for directory in _skills(root):
+        skill = directory / "SKILL.md"
+        if not skill.exists(): continue
+        try: _, body = _frontmatter(skill)
+        except Exception: continue
+        # Extract paths from markdown backticks, filter for plausible file paths
+        for raw in re.findall(r"`([^`]+)`", body):
+            candidate = raw.strip().lstrip("./")
+            # Filter: must contain slash, not start with http, look like a real file path
+            if "/" not in candidate or candidate.startswith(("http:", "https:")):
+                continue
+            if len(candidate) > 200:  # arbitrary length guard
+                continue
+            # Skip if it looks like a code function call or command
+            if "(" in candidate or ")" in candidate or " -type " in candidate or candidate.startswith(("~", "$")):
+                continue
+            # Skip template variables like <case_id>
+            if "<" in candidate and ">" in candidate:
+                continue
+            # Check if it has a file extension
+            if not any(candidate.endswith(ext) for ext in (".md", ".yaml", ".yml", ".txt", ".json")):
+                continue
+            if not (directory / candidate).is_file():
+                failures.append(f"references-resolve: {directory.name}/{candidate}")
+    return failures
+
+
+def _type_ok(value: Any, typ: str) -> bool:
+    return {"object": isinstance(value, dict), "array": isinstance(value, list),
+            "string": isinstance(value, str), "integer": isinstance(value, int) and not isinstance(value, bool),
+            "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+            "boolean": isinstance(value, bool)}.get(typ, True)
+
+
+def _validate(value: Any, schema: dict[str, Any], path: str = "$") -> list[str]:
+    errors = []
+    typ = schema.get("type")
+    # Handle nullable: true by accepting None for any type
+    if value is None and schema.get("nullable"):
+        return errors
+    if typ and not _type_ok(value, typ): return [f"{path}: expected {typ}"]
+    if "enum" in schema and value not in schema["enum"]: errors.append(f"{path}: not one of {schema['enum']}")
+    if isinstance(value, dict):
+        for key in schema.get("required", []):
+            if key not in value: errors.append(f"{path}: missing required field {key}")
+        if schema.get("additionalProperties") is False:
+            errors.extend(f"{path}: unexpected field {key}" for key in value if key not in schema.get("properties", {}))
+        for key, subschema in schema.get("properties", {}).items():
+            if key in value: errors.extend(_validate(value[key], subschema, f"{path}.{key}"))
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value): errors.extend(_validate(item, schema["items"], f"{path}[{index}]"))
+    if isinstance(value, (int, float)) and "minimum" in schema and value < schema["minimum"]:
+        errors.append(f"{path}: below minimum {schema['minimum']}")
+    return errors
+
+
+def _check_calibration(root: Path) -> list[str]:
+    try:
+        import yaml
+        base = root / "skills" / "lane-calibration" / "references"
+        schema = yaml.safe_load((base / "calibration-schema.yaml").read_text())
+        example = yaml.safe_load((base / "calibration-example.yaml").read_text())
+        return [f"calibration-schema: {error}" for error in _validate(example, schema)]
+    except Exception as exc:
+        return [f"calibration-schema: {exc}"]
+
+
+def _check_cross_skill_names(root: Path) -> list[str]:
+    installed = set()
+    bodies = []
+    failures = []
+    for directory in _skills(root):
+        try:
+            data, body = _frontmatter(directory / "SKILL.md")
+            installed.add(data.get("name"))
+            bodies.append((directory.name, body))
+        except Exception: continue
+    # Look for references to expected skills with skill or skills keyword
+    for owner, body in bodies:
+        for name in EXPECTED_SKILLS:
+            # Check if body references this skill with skill/keyword
+            if re.search(rf"`{re.escape(name)}`\s*(?:skill|skills)", body, re.IGNORECASE):
+                if name not in installed:
+                    failures.append(f"cross-skill-references: {owner} references missing {name}")
+    return failures
+
+
+def _check_cli_registration() -> list[str]:
+    source = inspect.getsource(_register_aos_cli)
+    return [f"cli-registration: missing command {name}" for name in EXPECTED_COMMANDS
+            if not re.search(rf'add_parser\(\s*["\']{re.escape(name)}["\']', source)]
+
+
+def _doctor_failures(root: Path) -> list[str]:
+    failures = []
+    failures += _check_skill_loadability(root)
+    failures += _check_references(root)
+    failures += _check_calibration(root)
+    failures += _check_cross_skill_names(root)
+    failures += _check_cli_registration()
+    return failures
+
+
 def _cmd_doctor(args: Any) -> int:
-    print(f"Agentic Fieldbook v{PLUGIN_VERSION} doctor — stub")
-    print("Full doctor verification will be added in later tickets.")
-    print("This stub proves command registration; real checks coming soon.")
+    root = _plugin_root(args)
+    failures = _doctor_failures(root)
+    print(f"Agentic Fieldbook v{PLUGIN_VERSION} doctor")
+    if failures:
+        print(f"FAIL: {len(failures)} named check(s) failed")
+        for failure in failures: print(f"- {failure}")
+        return 1
+    print(f"ALL CLEAR: skills, references, calibration schema, cross-skill names, and CLI registration verified")
     return 0
 
 
