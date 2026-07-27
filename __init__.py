@@ -70,6 +70,9 @@ def _cmd_setup(args: Any) -> int:
         print("ERROR: Hermes skills toolset is unavailable; enable it before setup", file=sys.stderr)
         return 1
 
+    # Check for version gap
+    _check_and_prompt_version_update()
+
     print(f"Agentic Fieldbook v{PLUGIN_VERSION} setup")
     print(f"Compatible with Hermes {HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}")
     soul = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
@@ -152,6 +155,118 @@ def _bundle_version(root: Path) -> str:
     except OSError:
         return PLUGIN_VERSION
     return version or PLUGIN_VERSION
+
+
+def _plugin_state_dir() -> Path:
+    """Return the plugin state directory in HERMES_HOME."""
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    state_dir = hermes_home / "plugins" / PLUGIN_NAME
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir
+
+
+def _load_plugin_state() -> dict[str, Any]:
+    """Load plugin state from state.json, return empty dict if missing."""
+    state_file = _plugin_state_dir() / "state.json"
+    if not state_file.exists():
+        return {}
+    import json
+    try:
+        return json.loads(state_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_plugin_state(state: dict[str, Any]) -> None:
+    """Save plugin state to state.json."""
+    import json
+    state_file = _plugin_state_dir() / "state.json"
+    state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _get_latest_github_version() -> tuple[bool, str]:
+    """
+    Fetch the latest release version from GitHub.
+
+    Returns (success, version_string). On failure, version_string is empty.
+    """
+    try:
+        import urllib.request
+        import json
+        with urllib.request.urlopen(
+            "https://api.github.com/repos/jtstothard/agentic-fieldbook/releases/latest",
+            timeout=5
+        ) as response:
+            data = json.loads(response.read().decode())
+            tag = data.get("tag_name", "")
+            if tag and tag.startswith("v"):
+                return True, tag[1:]  # Strip 'v' prefix
+            return False, ""
+    except Exception:
+        return False, ""
+
+
+def _get_available_version() -> str:
+    """
+    Get the available bundle version from GitHub.
+
+    Falls back to current installed version if GitHub check fails.
+    """
+    success, remote_version = _get_latest_github_version()
+    if success and remote_version:
+        return remote_version
+    # Fallback to current installed version
+    return PLUGIN_VERSION
+
+
+def _check_and_prompt_version_update() -> None:
+    """
+    Check for version gap and prompt user if needed.
+
+    Offers three choices: apply (y), skip this version (s), remind later (n).
+    Persists choice per version so same version never re-prompts.
+    """
+    available = _get_available_version()
+    if available == PLUGIN_VERSION:
+        return  # No version gap
+
+    state = _load_plugin_state()
+    version_decisions = state.get("version_decisions", {})
+
+    # Check if we already have a decision for this version
+    if available in version_decisions:
+        decision = version_decisions[available]
+        if decision in {"skipped", "remind_later"}:
+            # Skip prompt for previously decided versions
+            return
+
+    # Version gap detected - prompt user
+    print(f"\n📦 Update available: Agentic Fieldbook v{available} (you have v{PLUGIN_VERSION})")
+    print("Your choices:")
+    print("  [y] Apply update")
+    print(f"  [s] Skip this version (never prompt for v{available} again)")
+    print("  [n] Remind later (do not prompt again for this version)")
+
+    if not sys.stdin.isatty():
+        # Non-interactive mode: skip prompt
+        return
+
+    answer = input("Your choice [y/s/n]: ").strip().lower()
+
+    # Save decision
+    state.setdefault("version_decisions", {})[available] = {
+        "y": "applied",
+        "s": "skipped",
+        "n": "remind_later"
+    }.get(answer, "remind_later")
+    _save_plugin_state(state)
+
+    if answer in {"y", "yes"}:
+        print(f"Apply update: run 'pip install --upgrade git+https://github.com/jtstothard/agentic-fieldbook.git@v{available}'")
+    elif answer in {"s", "skip"}:
+        print(f"Skipped v{available}. You won't be prompted for this version again.")
+    else:
+        print(f"Reminder set. You may be prompted again later.")
 
 
 def _skills(root: Path) -> list[Path]:
