@@ -22,6 +22,8 @@ from agentic_fieldbook.plugin import (
     _handle_aos_command,
     _register_aos_cli,
     plugin_info,
+    _parse_version,
+    _check_hermes_version,
 )
 
 
@@ -29,12 +31,18 @@ class TestCommandStubs:
     """Test that stub commands are callable and return expected outputs."""
 
     def test_setup_command_returns_zero(self, capsys):
-        """Setup command stub should print message and return 0."""
-        result = _cmd_setup(Namespace())
-        captured = capsys.readouterr()
-        assert result == 0
-        assert "Agentic Fieldbook" in captured.out
-        assert "setup — stub" in captured.out
+        """Setup command stub should print message and return 0 (when Hermes is compatible)."""
+        # Mock Hermes as compatible for this test
+        from unittest.mock import MagicMock
+        import sys
+        mock_hermes = MagicMock()
+        mock_hermes.__version__ = "0.19.0"
+
+        with patch.dict("sys.modules", {"hermes": mock_hermes}):
+            result = _cmd_setup(Namespace())
+            captured = capsys.readouterr()
+            assert result == 0
+            assert "Agentic Fieldbook" in captured.out
 
     def test_doctor_command_returns_zero(self, capsys):
         """Doctor command stub should print message and return 0."""
@@ -51,7 +59,124 @@ class TestCommandStubs:
         assert result == 0
         assert "0.1.0" in captured.out
         assert "Hermes compatibility" in captured.out
-        assert ">=0.18.0" in captured.out
+        assert "0.18.0–0.20.0" in captured.out
+
+
+class TestVersionChecking:
+    """Test Hermes version checking logic."""
+
+    def test_parse_version_valid(self):
+        """Version parsing should work for valid semver strings."""
+        assert _parse_version("0.18.0") == (0, 18, 0)
+        assert _parse_version("1.2.3") == (1, 2, 3)
+        assert _parse_version("10.20.30") == (10, 20, 30)
+
+    def test_parse_version_invalid(self):
+        """Version parsing should raise for invalid strings."""
+        with pytest.raises(ValueError, match="Invalid version format"):
+            _parse_version("1.2")
+        with pytest.raises(ValueError, match="Invalid version format"):
+            _parse_version("1.2.3.4")
+
+    def test_check_hermes_version_success(self):
+        """Should return success when Hermes version is in range."""
+        from unittest.mock import MagicMock
+
+        mock_hermes = MagicMock()
+        mock_hermes.__version__ = "0.19.5"
+
+        with patch.dict("sys.modules", {"hermes": mock_hermes}):
+            is_compatible, error_msg = _check_hermes_version()
+            assert is_compatible is True
+            assert error_msg == ""
+
+    def test_check_hermes_version_below_floor(self):
+        """Should return error when Hermes version is below minimum."""
+        from unittest.mock import MagicMock
+
+        mock_hermes = MagicMock()
+        mock_hermes.__version__ = "0.17.0"
+
+        with patch.dict("sys.modules", {"hermes": mock_hermes}):
+            is_compatible, error_msg = _check_hermes_version()
+            assert is_compatible is False
+            assert "below minimum 0.18.0" in error_msg
+
+    def test_check_hermes_version_above_ceiling(self):
+        """Should return error when Hermes version exceeds maximum."""
+        from unittest.mock import MagicMock
+
+        mock_hermes = MagicMock()
+        mock_hermes.__version__ = "0.21.0"
+
+        with patch.dict("sys.modules", {"hermes": mock_hermes}):
+            is_compatible, error_msg = _check_hermes_version()
+            assert is_compatible is False
+            assert "exceeds maximum 0.20.0" in error_msg
+
+    def test_check_hermes_version_no_module(self):
+        """Should return error when Hermes module is not found."""
+        with patch.dict("sys.modules", {}, clear=False):
+            if "hermes" in sys.modules:
+                del sys.modules["hermes"]
+
+            is_compatible, error_msg = _check_hermes_version()
+            assert is_compatible is False
+            assert "Hermes module not found" in error_msg
+
+    def test_check_hermes_version_no_version_attr(self):
+        """Should return error when Hermes lacks __version__."""
+        from unittest.mock import MagicMock
+
+        mock_hermes = MagicMock(spec=[])  # Empty spec means no attributes
+
+        with patch.dict("sys.modules", {"hermes": mock_hermes}):
+            is_compatible, error_msg = _check_hermes_version()
+            assert is_compatible is False
+            assert "__version__ not found" in error_msg
+
+    def test_setup_command_passes_version_check(self, capsys):
+        """Setup should succeed when Hermes version is compatible."""
+        from unittest.mock import MagicMock
+
+        mock_hermes = MagicMock()
+        mock_hermes.__version__ = "0.19.0"
+
+        with patch.dict("sys.modules", {"hermes": mock_hermes}):
+            result = _cmd_setup(Namespace())
+            captured = capsys.readouterr()
+            assert result == 0
+            assert "Agentic Fieldbook v0.1.0 setup" in captured.out
+            assert "0.18.0–0.20.0" in captured.out
+
+    def test_setup_command_fails_below_floor(self, capsys):
+        """Setup should fail when Hermes version is below floor."""
+        from unittest.mock import MagicMock
+
+        mock_hermes = MagicMock()
+        mock_hermes.__version__ = "0.17.0"
+
+        with patch.dict("sys.modules", {"hermes": mock_hermes}):
+            result = _cmd_setup(Namespace())
+            captured = capsys.readouterr()
+            assert result != 0
+            assert "ERROR" in captured.err
+            assert "below minimum 0.18.0" in captured.err
+            assert "0.18.0–0.20.0" in captured.err
+
+    def test_setup_command_fails_above_ceiling(self, capsys):
+        """Setup should fail when Hermes version exceeds ceiling."""
+        from unittest.mock import MagicMock
+
+        mock_hermes = MagicMock()
+        mock_hermes.__version__ = "0.21.0"
+
+        with patch.dict("sys.modules", {"hermes": mock_hermes}):
+            result = _cmd_setup(Namespace())
+            captured = capsys.readouterr()
+            assert result != 0
+            assert "ERROR" in captured.err
+            assert "exceeds maximum 0.20.0" in captured.err
 
 
 class TestCommandHandler:
@@ -101,7 +226,7 @@ class TestPluginMetadata:
         info = plugin_info()
         assert info["name"] == "agentic-fieldbook"
         assert info["version"] == "0.1.0"
-        assert info["hermes_compatibility"] == ">=0.18.0"
+        assert info["hermes_compatibility"] == {"min": "0.18.0", "max": "0.20.0"}
         assert "homepage" in info
 
     def test_register_cli_structure(self):

@@ -9,11 +9,54 @@ This plugin is userland: it adds commands but does not load skills in v0.1 pendi
 Hermes plugin APIs confirmation.
 """
 
+import sys
+import re
 from typing import Any
 
 PLUGIN_NAME = "agentic-fieldbook"
 PLUGIN_VERSION = "0.1.0"
-HERMES_COMPATIBILITY = ">=0.18.0"
+HERMES_COMPATIBILITY = {"min": "0.18.0", "max": "0.20.0"}
+
+
+def _parse_version(version_str: str) -> tuple[int, int, int]:
+    """Parse a version string like '0.18.0' into (0, 18, 0)."""
+    parts = version_str.strip().split(".")
+    if len(parts) != 3:
+        raise ValueError(f"Invalid version format: {version_str}")
+    return int(parts[0]), int(parts[1]), int(parts[2])
+
+
+def _check_hermes_version() -> tuple[bool, str]:
+    """
+    Check if the running Hermes version meets compatibility requirements.
+
+    Returns (is_compatible, error_message).
+    """
+    try:
+        import hermes
+        hermes_version_str = getattr(hermes, "__version__", None)
+        if not hermes_version_str:
+            return False, "Cannot determine Hermes version: __version__ not found"
+
+        hermes_version = _parse_version(hermes_version_str)
+        min_version = _parse_version(HERMES_COMPATIBILITY["min"])
+        max_version = _parse_version(HERMES_COMPATIBILITY["max"])
+
+        if hermes_version < min_version:
+            return (
+                False,
+                f"Hermes version {hermes_version_str} is below minimum {HERMES_COMPATIBILITY['min']}"
+            )
+        if hermes_version > max_version:
+            return (
+                False,
+                f"Hermes version {hermes_version_str} exceeds maximum {HERMES_COMPATIBILITY['max']}"
+            )
+        return True, ""
+    except ImportError:
+        return False, "Hermes module not found (running outside Hermes?)"
+    except Exception as e:
+        return False, f"Version check error: {e}"
 
 
 def register(ctx: Any) -> None:
@@ -46,10 +89,10 @@ def _register_aos_cli(subparsers: Any) -> None:
         required=True,
     )
 
-    # setup subcommand (stub)
+    # setup subcommand (stub with real version check)
     aos_subparsers.add_parser(
         "setup",
-        help="Set up Agentic Fieldbook (v0.1: stub)",
+        help="Set up Agentic Fieldbook (v0.1: version check only)",
     )
 
     # doctor subcommand (stub)
@@ -85,10 +128,22 @@ def _handle_aos_command(args: Any) -> int:
 
 
 def _cmd_setup(args: Any) -> int:
-    """Stub setup command (v0.1)."""
-    print(f"Agentic Fieldbook v{PLUGIN_VERSION} setup — stub")
+    """Setup command with Hermes version check (v0.1)."""
+    is_compatible, error_msg = _check_hermes_version()
+
+    if not is_compatible:
+        print(f"ERROR: {error_msg}", file=sys.stderr)
+        print(
+            f"Agentic Fieldbook v{PLUGIN_VERSION} requires Hermes "
+            f"{HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}",
+            file=sys.stderr
+        )
+        return 1
+
+    print(f"Agentic Fieldbook v{PLUGIN_VERSION} setup")
+    print(f"Compatible with Hermes {HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}")
     print("Full setup implementation will be added in later tickets.")
-    print("This stub proves command registration; real installation logic coming soon.")
+    print("This stub proves version checking; real installation logic coming soon.")
     return 0
 
 
@@ -101,9 +156,9 @@ def _cmd_doctor(args: Any) -> int:
 
 
 def _cmd_version(args: Any) -> int:
-    """Print bundle version."""
+    """Print bundle version and compatibility range."""
     print(f"Agentic Fieldbook v{PLUGIN_VERSION}")
-    print(f"Hermes compatibility: {HERMES_COMPATIBILITY}")
+    print(f"Hermes compatibility: {HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}")
     return 0
 
 
