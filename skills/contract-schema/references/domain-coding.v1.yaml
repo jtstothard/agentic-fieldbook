@@ -1,0 +1,17 @@
+# Domain Extension: coding.v1
+# Adds fields for code implementation, bug fixes, and PRs.
+# Never weakens the universal core — only adds requirements.
+
+repository: ""        # REQUIRED. Full repo path or URL.
+base_revision: ""     # REQUIRED. Git SHA or branch the task starts from.
+branch: ""            # Working branch name (for branch-based workflows).
+allowed_paths: []     # REQUIRED. Paths the task may modify (glob patterns).
+  # e.g. ["src/auth/**", "tests/auth/**", "package.json"]
+test_commands: []     # REQUIRED. Commands to run tests.
+  # e.g. ["npm test", "npm run lint", "npm run typecheck"]
+diff_identity:
+  base: ""            # SHA or ref to diff against.
+  head: ""            # SHA or ref of the working changes.
+  files_changed: []   # Expected/actual changed files.
+style_guide: ""       # Repo style guide reference if applicable.
+ci_requirements: []   # CI checks that must pass (e.g. ["lint", "test", "build"]).

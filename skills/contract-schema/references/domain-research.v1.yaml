@@ -1,0 +1,14 @@
+# Domain Extension: research.v1
+# Adds fields for research tasks (literature review, data gathering, analysis).
+# Never weakens the universal core — only adds requirements.
+
+sources: []           # REQUIRED. Sources to consult or have consulted.
+  # Each: { type, identifier, url_or_path, access_method, freshness_check }
+  # Types: academic_paper, documentation, codebase, dataset, api, experiment
+citations: []         # REQUIRED. Citations or references to include.
+  # Each: { source_id, quote, relevance, page_or_timestamp }
+freshness_requirements: []  # How recent data must be (if applicable).
+  # Each: { domain, max_age_days, rationale }
+output_format: ""     # Research output format (e.g. "markdown_report", "structured_data", "summary").
+synthesis_method: ""  # How sources are combined (e.g. "systematic_review", "comparative_analysis").
+verification_method: "" # How findings are validated (e.g. "cross_source", "expert_review", "empirical_test").

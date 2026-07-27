@@ -1,0 +1,85 @@
+task_contract_id: EXAMPLE-001
+risk_assessment:
+  proposed_class: Medium
+  rationale: Staging environment mutation with tested rollback plan
+  dimensions:
+    impact:
+      level: Medium
+      factors:
+        - Staging environment only
+        - Affects QA workflow
+        - No production data at risk
+    reversibility:
+      level: Low
+      factors:
+        - Tested rollback plan exists
+        - Git revert available
+        - No data migration
+    permission_sensitivity:
+      level: Medium
+      factors:
+        - Write access to staging repository
+        - No secret access
+        - No admin privileges
+    operational_exposure:
+      level: Low
+      factors:
+        - Staging environment only
+        - No production impact
+        - No critical infrastructure
+    evidence_quality:
+      level: Medium
+      factors:
+        - Automated tests available
+        - Manual QA checklist
+        - No performance baseline
+    uncertainty:
+      level: Low
+      factors:
+        - Well-understood change
+        - Similar changes deployed before
+        - No new dependencies
+  effective_risk: Medium
+  always_ask_actions: []
+  escalation_history: []
+capability_ceiling:
+  class: Medium
+  permitted_tools:
+    - read_file
+    - write_file
+    - terminal
+    - git
+  permitted_paths:
+    - /path/to/workspace/*
+  permitted_hosts: []
+  permitted_accounts:
+    - git@github.com:example/example-repo
+  permitted_side_effects:
+    - Git commits to feature branch
+    - Staging deployment
+  restrictions:
+    - No production deployments
+    - No secret access
+    - No billing changes
+approval_binding:
+  target: Deploy feature-branch to staging
+  scope: Single feature branch, single repository
+  commands:
+    - git checkout feature-branch
+    - deploy-to-staging.sh
+  risk_class: Medium
+  rollback_plan: git revert <commit>; rollback-staging.sh
+  monitoring:
+    - Staging health checks
+    - Error rate monitoring
+  abort_conditions:
+    - Health check failure
+    - Error rate > 5%
+  time_window_hours: 24
+  approved: false
+  approver: null
+  approval_timestamp: null
+reassessment_triggers:
+  - Stage transition: staging → production
+  - Change in permitted hosts
+  - Change in scope boundaries

@@ -1,0 +1,15 @@
+# Domain Extension: automation.v1
+# Adds fields for automation tasks (pipelines, workflows, cron jobs, alerts).
+# Never weakens the universal core — only adds requirements.
+
+automation_type: ""   # REQUIRED. One of: pipeline, workflow, cron_job, alert, webhook.
+trigger: ""           # REQUIRED. What triggers this automation (schedule, event, condition).
+idempotency: ""       # REQUIRED. Whether this automation is idempotent ("yes", "no", "needs_guard").
+abort_conditions: []  # REQUIRED. Conditions that stop execution.
+  # Each: { condition, action, notification_channel }
+resource_limits: {}   # CPU, memory, timeout limits.
+  # e.g. { cpu: "2", memory: "4Gi", timeout: "10m" }
+retry_strategy: ""    # Retry logic on failure ("none", "exponential_backoff", "linear").
+max_retries: 0        # Maximum retry attempts (if applicable).
+notification_channels: []  # Where to send alerts on failure or success.
+  # Each: { channel, events, template }
