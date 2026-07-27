@@ -133,6 +133,52 @@ An executor **cannot**:
 
 These boundaries hold regardless of risk class. For low-risk work, roles may combine (e.g. same agent executes and verifies via automated checks) — but the executor still cannot *self-attest*; verification must run an independent check even if automated.
 
+## Investigating foreign codebases
+
+When a task requires understanding a codebase you have not seen before — especially in a different language or ecosystem — use this methodology:
+
+### Source acquisition
+
+- **Clone with shallow depth** (`git clone --depth 1`) for full history only when needed.
+- **GitHub raw URLs** for single-file inspection when you have the exact path.
+- **GitHub Code Search API or CLI `gh search`** for locating symbols across repos when API access is available.
+- **Archive.org snapshots or cached copies** as fallback when the original is inaccessible.
+
+Use the lightest viable method. Do not clone a multi-gigabyte repo to read one file.
+
+### Tracing patterns across ecosystems
+
+- **Dependency injection and service registration** patterns vary by ecosystem. Look for:
+  - **Rust:** `fn new()` builders, `Arc<T>` injection, macro-generated registration (`#[inject]`, service procedural macros)
+  - **Go:** explicit interface-based DI, `wire` code generation, struct embedding
+  - **JavaScript/TypeScript:** dependency injection containers (Inversify, Awilix), module factories, `provider` functions
+  - **Python:** `@inject` decorators, `Container` classes, `__init__` parameter injection
+  - **Java:** Spring annotations (`@Component`, `@Service`, `@Autowired`), XML configs
+  - **.NET:** `IServiceCollection` registration, constructor injection
+- **Middleware and routing:** look for pipeline registration, handler maps, routing tables, or interceptor chains near entry points.
+- **Configuration loading:** check for environment variable substitution, config file parsing, and how configuration propagates to services.
+
+Search for these patterns by language-specific keywords rather than assuming a common structure.
+
+### Escalation criteria
+
+Escalate to the user for repo access when:
+
+- The repo is **private** and you lack credentials.
+- The repo is **unavailable** (deleted, moved, or access-restricted) and public snapshots are insufficient.
+- The task requires **write access** (you must clone with a write-capable remote).
+- You need **historical context** beyond a shallow clone (blame, timeline, commit history).
+- **Ecosystem-specific tooling** is required (language build systems, package managers) that you cannot run.
+
+Continue with public sources when:
+
+- The code is **read-only investigation** (understanding, analysis, documentation).
+- **Single-file or bounded-scope** access suffices.
+- The repo is **public and accessible** via clone or raw URLs.
+- Public documentation, examples, or forks provide the needed context.
+
+If unsure, state the limitation and ask: *"I can read [specific files] via public sources; do you need [full repo access / historical context / write capability]?"*
+
 ## Relationship to other skills
 
 - **contract-schema** — provides the contract that plans operate on.
