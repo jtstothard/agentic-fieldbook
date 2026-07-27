@@ -64,3 +64,27 @@ class TestInstalledRootLayout:
         mock_ctx.register_cli_command.assert_called_once()
         call_kwargs = mock_ctx.register_cli_command.call_args[1]
         assert call_kwargs["name"] == "aos"
+
+    def test_root_setup_is_real_handler(self, monkeypatch, tmp_path):
+        """The Git-installed root entry point must not regress to the setup stub."""
+        import importlib.util
+        import sys
+        from argparse import Namespace
+        from unittest.mock import MagicMock
+
+        spec = importlib.util.spec_from_file_location(
+            "_root_fieldbook_setup_check", REPO_ROOT / "__init__.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        fake_hermes = MagicMock()
+        fake_hermes.__version__ = "0.19.0"
+        monkeypatch.setitem(sys.modules, "hermes", fake_hermes)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(mod, "_cmd_doctor", lambda args: 0)
+
+        assert mod._cmd_setup(Namespace(yes=True)) == 0
+        content = (tmp_path / "SOUL.md").read_text()
+        assert "<!-- aos:begin -->" in content
+        assert "<!-- aos:end -->" in content

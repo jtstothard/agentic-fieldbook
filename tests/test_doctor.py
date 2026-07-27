@@ -204,9 +204,16 @@ class TestDoctorEdgeCases:
 
 
 class TestOtherCommandsUnchanged:
-    def test_setup_and_version_commands_still_work(self):
+    def test_setup_and_version_commands_still_work(self, monkeypatch, tmp_path):
         """Setup and version commands should remain functional."""
-        setup_result = _cmd_setup(MagicMock())
+        fake_hermes = MagicMock()
+        fake_hermes.__version__ = "0.19.0"
+        monkeypatch.setitem(sys.modules, "hermes", fake_hermes)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        setup_args = MagicMock()
+        setup_args.yes = True
+        setup_args.plugin_root = None
+        setup_result = _cmd_setup(setup_args)
         version_result = _cmd_version(MagicMock())
         assert setup_result == 0, "Setup command should still work"
         assert version_result == 0, "Version command should still work"
