@@ -38,6 +38,20 @@ Load these with `skill_view(name='contract-schema', file_path=...)`:
 | `references/versioning-rules.md` | Immutable core, append-only stages, material-change revision rules |
 | `references/example-contract-coding.yaml` | Worked example: a coding task contract |
 
+## Domain extension selection
+
+Use this table to choose the right domain extension for your task:
+
+| Task type pattern | Apply extension |
+|---|---|
+| Code changes, bug fixes, PRs, refactors, test additions | `domain-coding.v1.yaml` |
+| Research, literature review, data gathering, analysis, synthesis | `domain-research.v1.yaml` |
+| Deployments, infrastructure changes, migrations, service configuration | `domain-ops.v1.yaml` |
+| Pipelines, workflows, cron jobs, alerts, webhooks, automation systems | `domain-automation.v1.yaml` |
+| Multi-domain (e.g., code + deployment) | Combine multiple extensions; add all relevant fields |
+
+If none apply, the universal core alone is sufficient for generic task tracking.
+
 ## Core rules
 
 1. **Immutable core.** Once work starts, the original objective, scope, constraints, risk, and approval envelope are immutable. Material changes create a new contract revision.
@@ -58,3 +72,7 @@ Load these with `skill_view(name='contract-schema', file_path=...)`:
 6. Verify against pre-registered acceptance criteria and required evidence.
 7. Only mark `verified` when all required evidence is present and valid.
 ```
+
+## Evidence via CI escape hatch
+
+When local test execution is not available (polyglot estates, missing SDKs, or environment constraints), the contract can specify `evidence_source: ci` in `evidence_requirements.required`. The executor declares this upfront during planning; the reviewer weights CI evidence accordingly (e.g., trusts CI pass/fail status, reviews logs for gaps). The evidence gate still requires passing CI — this is a verification method, not an evidence waiver.
