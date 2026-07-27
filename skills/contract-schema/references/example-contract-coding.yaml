@@ -104,11 +104,11 @@ limits:
 # --- Role Assignments ---
 roles:
   requester: "user"
-  planner: "default-router"
-  executor: "coder"
+  planner: "planner"
+  executor: "executor"
   reviewers: []
-  fixer: "coder"
-  verifier: "coder"
+  fixer: "executor"
+  verifier: "verifier"
   approver: ""
 
 # --- Lifecycle State ---
