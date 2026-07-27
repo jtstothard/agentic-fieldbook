@@ -270,8 +270,8 @@ class TestPluginMetadata:
 
         _register_aos_cli(mock_subparsers)
 
-        # Verify four subcommands were added (setup, doctor, version, migrate)
-        assert mock_aos_subparsers.add_parser.call_count == 4
+        # Verify five subcommands were added (setup, doctor, version, migrate, preflight)
+        assert mock_aos_subparsers.add_parser.call_count == 5
 
         # Verify subcommand names
         call_args = [call[0][0] for call in mock_aos_subparsers.add_parser.call_args_list]
@@ -279,6 +279,7 @@ class TestPluginMetadata:
         assert "doctor" in call_args
         assert "version" in call_args
         assert "migrate" in call_args
+        assert "preflight" in call_args
 
 
 class TestSkillArtifacts:

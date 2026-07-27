@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 from typing import Any
+from .preflight import check_preflight
 
 PLUGIN_NAME = "agentic-fieldbook"
 PLUGIN_VERSION = (Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
@@ -114,6 +115,17 @@ def _register_aos_cli(subparsers: Any) -> None:
         help="Apply bundle migrations (v0.1: no-op)",
     )
 
+    # preflight subcommand
+    preflight_parser = aos_subparsers.add_parser(
+        "preflight",
+        help="Validate Fieldbook skills are available on a target profile",
+    )
+    preflight_parser.add_argument(
+        "--profile",
+        required=True,
+        help="Name of the Hermes profile to check",
+    )
+
 
 def _handle_aos_command(args: Any) -> int:
     """Handle 'hermes aos' subcommand execution.
@@ -131,6 +143,8 @@ def _handle_aos_command(args: Any) -> int:
         return _cmd_version(args)
     elif subcommand == "migrate":
         return _cmd_migrate(args)
+    elif subcommand == "preflight":
+        return _cmd_preflight(args)
     else:
         print(f"Unknown aos subcommand: {subcommand}")
         return 1
@@ -246,6 +260,15 @@ def _cmd_migrate(args: Any) -> int:
     """Run bundle migrations; v0.1 intentionally has nothing to migrate."""
     print(f"Agentic Fieldbook v{PLUGIN_VERSION} migrate: no changes needed")
     return 0
+
+
+def _cmd_preflight(args: Any) -> int:
+    """Check if all Fieldbook skills are available on the target profile."""
+    profile = getattr(args, "profile", None)
+    if not profile:
+        print("ERROR: --profile is required", file=sys.stderr)
+        return 1
+    return check_preflight(profile)
 
 
 # Metadata for plugin discovery (not used by Hermes plugin loader but useful for tooling)
