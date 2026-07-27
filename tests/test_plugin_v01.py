@@ -1,11 +1,14 @@
 """
-Tests for Agentic Fieldbook v0.1 plugin commands (setup, doctor, version).
-
-These are stub-level tests that verify the commands are registered and respond.
-Full runtime verification and skill loading tests will be added in later tickets.
+Tests for Agentic Fieldbook plugin commands (setup, doctor, version).
 """
 
 import os
+from pathlib import Path
+
+# Read the canonical version from VERSION so these tests are not change-detectors
+_VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
+PLUGIN_VERSION = _VERSION_FILE.read_text(encoding="utf-8").strip()
+
 import tempfile
 import pytest
 from unittest.mock import MagicMock, patch
@@ -71,7 +74,7 @@ class TestCommandStubs:
         result = _cmd_version(Namespace())
         captured = capsys.readouterr()
         assert result == 0
-        assert "0.1.0" in captured.out
+        assert PLUGIN_VERSION in captured.out
         assert "Hermes compatibility" in captured.out
         assert "0.18.0–0.20.0" in captured.out
 
@@ -176,7 +179,7 @@ class TestVersionChecking:
                 result = _cmd_setup(Namespace(yes=True))
                 captured = capsys.readouterr()
                 assert result == 0
-                assert "Agentic Fieldbook v0.1.0 setup" in captured.out
+                assert f"Agentic Fieldbook v{PLUGIN_VERSION} setup" in captured.out
                 assert "0.18.0–0.20.0" in captured.out
 
     def test_setup_command_fails_below_floor(self, capsys):
@@ -255,7 +258,7 @@ class TestPluginMetadata:
         """plugin_info should return correct metadata dict."""
         info = plugin_info()
         assert info["name"] == "agentic-fieldbook"
-        assert info["version"] == "0.1.0"
+        assert info["version"] == PLUGIN_VERSION
         assert info["hermes_compatibility"] == {"min": "0.18.0", "max": "0.20.0"}
         assert "homepage" in info
 
@@ -398,7 +401,7 @@ class TestBundleVersioning:
         assert version_content == info["version"], (
             "VERSION file should match plugin version"
         )
-        assert version_content == "0.1.0", "v0.1.0 is the expected version"
+        assert version_content == PLUGIN_VERSION, f"{PLUGIN_VERSION} is the expected version"
 
     def test_setup_py_exists_and_is_valid_python(self):
         """setup.py should exist and be valid Python."""
@@ -421,7 +424,7 @@ class TestDoctorDetection:
         result = _cmd_doctor(Namespace())
         captured = capsys.readouterr()
         assert result == 0
-        assert "Agentic Fieldbook v0.1.0 doctor" in captured.out
+        assert f"Agentic Fieldbook v{PLUGIN_VERSION} doctor" in captured.out
 
     def test_doctor_stub_detects_plugin(self, capsys):
         """Doctor stub should indicate it detects the plugin."""
