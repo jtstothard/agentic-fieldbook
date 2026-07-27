@@ -1,0 +1,14 @@
+# Domain Extension: ops.v1
+# Adds fields for operations tasks (deployments, infrastructure changes, monitoring).
+# Never weakens the universal core — only adds requirements.
+
+target_host: ""       # REQUIRED. Host or cluster where changes apply.
+backup_plan: ""       # REQUIRED. Backup method before mutation.
+rollback_plan: ""     # REQUIRED. Rollback procedure if things go wrong.
+health_probes: []     # REQUIRED. Health checks to verify success.
+  # Each: { probe_type, endpoint_or_command, expected_result, timeout }
+downtime_budget: ""   # Allowed downtime window (e.g. "5m", "none").
+canary_strategy: ""   # Canary deployment strategy if applicable (e.g. "percentage_rollout").
+monitoring: []        # Monitoring signals to track.
+  # Each: { metric_name, alert_threshold, duration, notification_channel }
+change_window: ""     # Approved change window (e.g. "2026-07-27T02:00:00Z/2026-07-27T06:00:00Z").

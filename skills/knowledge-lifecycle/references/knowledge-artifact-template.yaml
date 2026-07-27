@@ -1,0 +1,45 @@
+# Knowledge Artifact Template
+# Every durable knowledge artifact carries these freshness markers.
+# Used for skills, memory entries, context docs, and promoted learnings.
+
+artifact_id: ""            # REQUIRED. Unique ID.
+title: ""                  # REQUIRED. Short descriptive title.
+
+# --- Scope (narrowest correct level) ---
+scope: ""                  # REQUIRED. One of: local, repository-profile, global
+  # local = one-off fix, stays in task record
+  # repository-profile = recurring workflow, promoted to skill/context doc
+  # global = cross-domain workflow truth, promoted to universal policy
+applies_to: []             # REQUIRED. What this knowledge covers.
+  # e.g. ["configuration", "infrastructure lifecycle", "web routing"]
+does_not_apply_to: []      # Explicit limits (prevents over-generalization).
+
+# --- Content ---
+summary: ""                # REQUIRED. One-line summary.
+detail: ""                 # REQUIRED. Full explanation / procedure / rule.
+references: []              # Links to source evidence, docs, prior decisions.
+
+# --- Freshness markers ---
+source: ""                 # REQUIRED. Where this knowledge came from.
+author_lane: ""            # REQUIRED. Who/what created it (profile/model/role).
+evidence_type: ""          # REQUIRED. What backs this up.
+  # e.g. "verified-execution", "official-docs", "empirical-test", "community-consensus", "single-observation"
+created: ""                # REQUIRED. ISO date.
+last_validated: ""         # REQUIRED. ISO date of last validation check.
+  # If last_validated is stale (past review window), knowledge is quarantined.
+confidence: ""             # REQUIRED. low | medium | high
+dependencies: []           # Things this knowledge depends on staying true.
+  # If a dependency changes, this knowledge may be stale → reassess.
+
+# --- Promotion provenance (filled when promoted from narrower scope) ---
+promoted_from: ""          # Previous scope if promoted (local → repo → global).
+promotion_evidence: ""     # What evidence justified promotion.
+promoted_by: ""            # Who approved the promotion.
+promoted_on: ""            # ISO date of promotion.
+
+# --- Status ---
+status: "active"           # active | quarantined | retired
+  # quarantined = flagged as stale or contradicted, awaiting review
+  # retired = formally superseded, provenance preserved
+status_reason: ""          # Why status changed (if not active).
+status_changed: ""         # When status changed.

@@ -1,0 +1,100 @@
+# Agentic Operating System — Universal Core Contract Schema v1
+# Canonical YAML representation. JSON is the equivalent machine form.
+# This is the universal core; domain extensions (coding.v1, research.v1, etc.)
+# add fields but never remove or relax core requirements.
+
+$schema: aos-contract-core-v1
+contract_id: ""        # REQUIRED. Stable unique ID, e.g. "AOS-2026-001"
+revision: 1            # REQUIRED. Integer, increments on material change.
+
+# --- Objective ---
+objective:
+  summary: ""          # REQUIRED. One-line description.
+  detail: ""           # REQUIRED. Full objective with context and motivation.
+  success_definition: ""  # REQUIRED. What does done look like in observable terms?
+
+# --- Scope ---
+scope:
+  in_scope: []         # REQUIRED. List of what the task covers.
+  exclusions: []       # REQUIRED. Explicitly out of scope (prevents scope creep).
+
+# --- Constraints ---
+constraints:
+  tools: []            # Permitted tools (e.g. ["terminal", "browser", "web_search"])
+  models: []           # Permitted/requested models or model tiers
+  time_limit: ""       # Wall-clock budget (e.g. "30m", "2h")
+  cost_limit: ""       # Cost budget if applicable
+  permissions: []      # Required permissions (e.g. ["repo-write", "host-ssh"])
+  safety: []           # Safety constraints (e.g. ["no-production-mutation", "read-only"])
+
+# --- Risk ---
+risk:
+  class: ""            # REQUIRED. One of: low, medium, high
+  rationale: ""        # REQUIRED. Factors considered in classification.
+  factors:             # Effective risk = MAXIMUM across all dimensions; missing = upward
+    impact: ""         # low | medium | high
+    reversibility: ""  # low | medium | high (low reversibility = high risk)
+    permissions: ""    # low | medium | high
+    exposure: ""       # low | medium | high (operational/blast radius)
+    evidence_quality: "" # low | medium | high (low evidence quality = higher risk)
+    uncertainty: ""    # low | medium | high (uncertainty escalates upward)
+  always_ask_actions: []  # Destructive, secret, billing, access, downtime, release — always need human approval
+  capability_ceiling: ""  # Derived from class — see risk-taxonomy skill
+
+# --- Capabilities (least-privilege, task-scoped) ---
+capabilities:
+  permitted_tools: []      # REQUIRED. Exact tools this task may use.
+  permitted_paths: []      # Filesystem paths this task may read/write.
+  permitted_hosts: []      # Hosts this task may touch.
+  permitted_accounts: []   # Accounts/identities this task may act as.
+  side_effects: []         # REQUIRED. Declared side effects (writes, deploys, sends, mutations).
+
+# --- Acceptance Criteria ---
+acceptance_criteria:
+  required: []   # REQUIRED. Must all pass for `verified`. Observable and testable.
+  optional: []   # Nice-to-have; failure does not block verification.
+  # Each criterion: { id, description, evidence_required, verification_method }
+
+# --- Evidence Requirements ---
+evidence_requirements:
+  required: []   # REQUIRED. Evidence that must be present for verification.
+  # Each requirement maps to acceptance criteria.
+  # Evidence record format (see stage-output-envelope):
+  #   claim, tool_or_command, target, environment, timestamp, actor,
+  #   exit_status, artifact_link, scope_covered, limitations, status
+
+# --- Output ---
+output:
+  format: ""        # REQUIRED. Expected deliverable format.
+  location: ""      # Where output artifacts go.
+  artifacts: []     # Expected artifact list.
+
+# --- Escalation ---
+escalation:
+  rules: []         # When and how to escalate (blockers, risk increase, ambiguity).
+  contacts: []      # Who to escalate to (roles or humans).
+
+# --- Limits ---
+limits:
+  time: ""          # Overall time limit.
+  cost: ""          # Overall cost limit.
+  stages: ""        # Expected number of lifecycle stages.
+
+# --- Role Assignments ---
+roles:
+  requester: ""     # REQUIRED. Who asked for this task.
+  planner: ""       # Who plans/decomposes (may be same as executor for low-risk).
+  executor: ""      # REQUIRED. Who executes the work.
+  reviewers: []     # Who reviews (independent context/lane).
+  fixer: ""         # Who applies review findings (separate from reviewer).
+  verifier: ""      # REQUIRED for medium+. Who verifies (cannot be the executor).
+  approver: ""      # REQUIRED for high-risk / always-ask. Human who approves.
+
+# --- Lifecycle State (managed by the state machine) ---
+lifecycle:
+  state: "proposed"   # proposed → planned → approved → executing → review → verification → verified
+  # Side states: blocked, failed, cancelled, superseded
+  history: []         # Append-only log of state transitions with timestamp + actor.
+  # Each entry: { from, to, timestamp, actor, reason }
+
+# --- Domain Extensions (add the applicable one) ---

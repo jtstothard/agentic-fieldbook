@@ -1,0 +1,61 @@
+# Stage Output Envelope
+# Every stage returns this envelope when reporting completion or status.
+
+stage_name: ""         # REQUIRED. Which stage this is (planning, execution, review, verification).
+contract_id: ""        # REQUIRED. Links to the contract.
+revision: 1            # Contract revision this report operates on.
+lifecycle_state: ""    # Current lifecycle state.
+
+# --- Outcome ---
+outcome: ""            # REQUIRED. One of: completed, blocked, failed, cancelled, needs_replan
+exit_status: ""        # Numeric exit status (0 = success, non-zero = failure or blocked).
+
+# --- Summary ---
+summary: ""            # REQUIRED. 1-3 sentence human-readable summary of what was done.
+
+# --- Work completed ---
+completed_actions: []  # Actions completed in this stage.
+  # Each: { action, result, timestamp, actor }
+partial_actions: []    # Actions started but not completed (for blocked cases).
+  # Each: { action, progress, blocking_issue, timestamp, actor }
+
+# --- Evidence ---
+evidence_records: []   # REQUIRED. Evidence gathered during this stage.
+  # Each: {
+  #   claim,                          # What was verified (e.g. "All tests pass")
+  #   tool_or_command,                # What produced this evidence (e.g. "pytest")
+  #   target,                         # What was checked (e.g. "tests/")
+  #   environment,                    # Where this ran (e.g. "local workstation")
+  #   timestamp,                      # ISO 8601
+  #   actor,                          # Who/what ran this
+  #   exit_status,                    # Numeric exit code
+  #   artifact_link,                  # Path or URL to full output (if any)
+  #   scope_covered,                  # What portion of the acceptance criteria this covers
+  #   limitations,                    # Known gaps or caveats
+  #   status                          # "verified" | "failed" | "inconclusive"
+  # }
+
+# --- Blockers and blockers ---
+blockers: []           # Issues preventing progress.
+  # Each: { description, severity, proposed_resolution, status, timestamp }
+risks: []              # Risks identified or escalated.
+  # Each: { description, class, source, timestamp, reassessment_needed }
+open_questions: []     # Questions needing answers before proceeding.
+  # Each: { question, context, urgency, who_decides, timestamp }
+
+# --- Artifacts produced ---
+artifacts: []          # Artifacts created or modified.
+  # Each: { ref, type, description, sha256 }
+  # Types: file, commit, branch, pr, url, evidence_record
+
+# --- Next steps ---
+next_action:           # What happens next.
+  description: ""      # What to do.
+  role: ""             # Which role does it (executor, reviewer, fixer, verifier).
+  recommended_lane: "" # Suggested lane/profile (may be empty for auto-route).
+
+# --- Stage metadata ---
+timestamp: ""          # REQUIRED. ISO 8601 when this envelope was produced.
+actor: ""              # REQUIRED. Who/what produced this envelope (role + lane).
+session_ref: ""        # Session ID for audit trail.
+duration_seconds: ""   # How long this stage took (optional but useful for planning).

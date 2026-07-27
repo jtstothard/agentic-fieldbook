@@ -1,0 +1,60 @@
+# Example: Planner → Executor Stage Handoff
+
+contract_id: "EXAMPLE-001"
+revision: 1
+lifecycle_state: "approved"
+
+completed_actions:
+  - action: "Analyzed the pagination bug and confirmed off-by-one in skip calculation"
+    result: "Root cause confirmed: `page * size - 1` instead of `(page - 1) * size` in src/api/orders/pagination.ts line 42"
+    evidence_ref: "git show a1b2c3d:src/api/orders/pagination.ts"
+    timestamp: "2026-07-24T14:00:00Z"
+    actor: "default-router (planner)"
+  - action: "Verified test fixtures support 3-page test case"
+    result: "25-item fixture exists in tests/fixtures/orders.ts; supports 10+10+5 test"
+    evidence_ref: "tests/fixtures/orders.ts"
+    timestamp: "2026-07-24T14:02:00Z"
+    actor: "default-router (planner)"
+
+outstanding_work:
+  - description: "Fix the skip calculation on line 42 of src/api/orders/pagination.ts"
+    assigned_role: "executor"
+    dependencies: []
+  - description: "Add regression test for 3-page pagination in tests/api/orders/pagination.test.ts"
+    assigned_role: "executor"
+    dependencies: ["pagination fix applied"]
+  - description: "Run full test suite and confirm all pass"
+    assigned_role: "executor"
+    dependencies: ["fix and test added"]
+
+blockers: []
+dependencies: []
+
+open_questions: []
+
+risk_class: "low"
+risk_changes: []
+
+next_action:
+  description: "Apply the one-line fix, add the regression test, run the test suite, and produce a stage output envelope with evidence."
+  role: "executor"
+  lane: "coder"
+  context: "Branch feature/fix-orders-pagination is checked out. The fix is on line 42. The test file already exists — add a new describe block. Run `npm test` to verify."
+
+artifacts:
+  - ref: "src/api/orders/pagination.ts"
+    type: "file"
+    description: "File containing the bug (line 42)"
+  - ref: "tests/api/orders/pagination.test.ts"
+    type: "file"
+    description: "Test file to extend"
+  - ref: "tests/fixtures/orders.ts"
+    type: "file"
+    description: "25-item fixture for pagination tests"
+  - ref: "feature/fix-orders-pagination"
+    type: "branch"
+    description: "Working branch, checked out and ready"
+
+timestamp: "2026-07-24T14:05:00Z"
+actor: "default-router (planner)"
+session_ref: "session-abc123"  # executor does NOT inherit this session

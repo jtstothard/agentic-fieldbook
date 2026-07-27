@@ -1,0 +1,138 @@
+# Example Contract: Coding Task (Pagination Bug Fix)
+# This is a complete worked example of a coding contract using the core schema
+# plus the coding domain extension.
+
+$schema: aos-contract-core-v1
+contract_id: "EXAMPLE-CODING-001"
+revision: 1
+
+# --- Objective ---
+objective:
+  summary: "Fix off-by-one error in pagination skip calculation"
+  detail: "The pagination API returns incorrect items for pages beyond the first. The skip calculation uses `page * size - 1` instead of `(page - 1) * size`, causing an off-by-one error that returns one item too early."
+  success_definition: "Pagination returns correct items for all pages, all existing tests pass, and a regression test covers the 3-page case."
+
+# --- Scope ---
+scope:
+  in_scope:
+    - "Fix skip calculation in src/api/orders/pagination.ts"
+    - "Add regression test for 3-page pagination (10+10+5 items)"
+    - "Verify all tests pass"
+  exclusions:
+    - "No changes to pagination API contract or response format"
+    - "No database schema changes"
+
+# --- Constraints ---
+constraints:
+  tools: ["terminal", "read_file", "write_file", "git"]
+  models: []
+  time_limit: "2h"
+  cost_limit: ""
+  permissions: ["repo-write"]
+  safety: ["no-production-mutation"]
+
+# --- Risk ---
+risk:
+  class: "low"
+  rationale: "Local code change with immediate test verification, reversible via git revert, no production deployment."
+  factors:
+    impact: "low"
+    reversibility: "low"
+    permissions: "low"
+    exposure: "low"
+    evidence_quality: "high"
+    uncertainty: "low"
+  always_ask_actions: []
+  capability_ceiling: "low"
+
+# --- Capabilities (least-privilege, task-scoped) ---
+capabilities:
+  permitted_tools: ["terminal", "read_file", "write_file", "git"]
+  permitted_paths:
+    - "src/api/orders/pagination.ts"
+    - "tests/api/orders/pagination.test.ts"
+    - "tests/fixtures/orders.ts"
+  permitted_hosts: []
+  permitted_accounts: []
+  side_effects:
+    - "Git commits to feature branch"
+
+# --- Acceptance Criteria ---
+acceptance_criteria:
+  required:
+    - id: "AC-1"
+      description: "Pagination returns correct items for all pages (10, 10, 5 items in 3-page test)"
+      evidence_required: "Test output showing 3 tests pass"
+      verification_method: "npm test"
+    - id: "AC-2"
+      description: "Skip calculation formula is `(page - 1) * size`"
+      evidence_required: "Git diff showing one-line change"
+      verification_method: "git diff"
+    - id: "AC-3"
+      description: "All existing tests continue to pass"
+      evidence_required: "Full test suite output with 0 failures"
+      verification_method: "npm test"
+  optional: []
+
+# --- Evidence Requirements ---
+evidence_requirements:
+  required:
+    - "Git diff of the fix"
+    - "Test run output (all passing, 0 failures)"
+    - "New regression test code"
+
+# --- Output ---
+output:
+  format: "git commit on feature branch"
+  location: "feature/fix-orders-pagination"
+  artifacts:
+    - "src/api/orders/pagination.ts (fixed)"
+    - "tests/api/orders/pagination.test.ts (extended)"
+    - "commit on feature branch"
+
+# --- Escalation ---
+escalation:
+  rules: []
+  contacts: []
+
+# --- Limits ---
+limits:
+  time: "2h"
+  cost: ""
+  stages: "3 (planning, execution, verification)"
+
+# --- Role Assignments ---
+roles:
+  requester: "user"
+  planner: "default-router"
+  executor: "coder"
+  reviewers: []
+  fixer: "coder"
+  verifier: "coder"
+  approver: ""
+
+# --- Lifecycle State ---
+lifecycle:
+  state: "proposed"
+  history: []
+
+# --- Domain Extension: coding.v1 ---
+repository: "git@github.com:example/example-repo"
+base_revision: "main"
+branch: "feature/fix-orders-pagination"
+allowed_paths:
+  - "src/api/orders/**"
+  - "tests/api/orders/**"
+test_commands:
+  - "npm test"
+  - "npm run lint"
+diff_identity:
+  base: "main"
+  head: "feature/fix-orders-pagination"
+  files_changed:
+    - "src/api/orders/pagination.ts"
+    - "tests/api/orders/pagination.test.ts"
+style_guide: ""
+ci_requirements:
+  - "lint"
+  - "test"

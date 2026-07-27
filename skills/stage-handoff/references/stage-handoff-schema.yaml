@@ -1,0 +1,44 @@
+# Stage Handoff Artifact Schema
+# Passes contract state between lifecycle roles without transcript history.
+
+contract_id: ""         # REQUIRED. Links to the contract.
+revision: 1             # Contract revision this handoff operates on.
+lifecycle_state: ""     # REQUIRED. Current state: planned, approved, executing, review, verification.
+
+# --- Completed work ---
+completed_actions: []   # REQUIRED. What has been done so far (with evidence links).
+  # Each: { action, result, evidence_ref, timestamp, actor }
+outstanding_work: []    # REQUIRED. What remains to be done.
+  # Each: { description, assigned_role, dependencies }
+
+# --- Blockers and dependencies ---
+blockers: []            # Issues preventing progress.
+  # Each: { description, severity, proposed_resolution, status }
+dependencies: []        # External dependencies (other tasks, resources, decisions).
+  # Each: { dependency, type, status, owner }
+
+# --- Open items ---
+open_questions: []      # Unresolved questions needing a decision or input.
+  # Each: { question, context, urgency, who_decides }
+
+# --- Risk ---
+risk_class: ""          # Current risk class (may differ from original if reassessed).
+risk_changes: []        # Any risk changes since the contract was approved.
+  # Each: { change, reason, timestamp, reassessed_by }
+
+# --- Next action ---
+next_action:            # REQUIRED. What the receiving role must do.
+  description: ""       # What to do.
+  role: ""              # Which role does it (executor, reviewer, fixer, verifier).
+  lane: ""              # Suggested lane/profile.
+  context: ""           # Any context the role needs to start.
+
+# --- Artifact references ---
+artifacts: []           # REQUIRED. Files, commits, URLs, paths the role needs.
+  # Each: { ref, type, description }
+  # Types: file, commit, url, branch, pr, evidence_record
+
+# --- Identity ---
+timestamp: ""           # REQUIRED. ISO 8601.
+actor: ""               # REQUIRED. Who/what produced this handoff (role + lane).
+session_ref: ""         # Session ID for audit trail (the receiver does NOT inherit this session).
