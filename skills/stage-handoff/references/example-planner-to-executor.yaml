@@ -9,12 +9,12 @@ completed_actions:
     result: "Root cause confirmed: `page * size - 1` instead of `(page - 1) * size` in src/api/orders/pagination.ts line 42"
     evidence_ref: "git show a1b2c3d:src/api/orders/pagination.ts"
     timestamp: "2026-07-24T14:00:00Z"
-    actor: "default-router (planner)"
+    actor: "planner"
   - action: "Verified test fixtures support 3-page test case"
     result: "25-item fixture exists in tests/fixtures/orders.ts; supports 10+10+5 test"
     evidence_ref: "tests/fixtures/orders.ts"
     timestamp: "2026-07-24T14:02:00Z"
-    actor: "default-router (planner)"
+    actor: "planner"
 
 outstanding_work:
   - description: "Fix the skip calculation on line 42 of src/api/orders/pagination.ts"
@@ -38,7 +38,7 @@ risk_changes: []
 next_action:
   description: "Apply the one-line fix, add the regression test, run the test suite, and produce a stage output envelope with evidence."
   role: "executor"
-  lane: "coder"
+  lane: "executor"
   context: "Branch feature/fix-orders-pagination is checked out. The fix is on line 42. The test file already exists — add a new describe block. Run `npm test` to verify."
 
 artifacts:
@@ -56,5 +56,5 @@ artifacts:
     description: "Working branch, checked out and ready"
 
 timestamp: "2026-07-24T14:05:00Z"
-actor: "default-router (planner)"
+actor: "planner"
 session_ref: "session-abc123"  # executor does NOT inherit this session

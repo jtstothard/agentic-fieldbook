@@ -25,7 +25,7 @@ The plugin owns installation and activation. The bundle is distributed from a st
 11. As a Hermes user, I want doctor to validate the bundle's YAML schemas, so that malformed calibration data is detected early.
 12. As a Hermes user, I want doctor to check cross-skill names and CLI registration, so that internal contract drift becomes a named failure.
 13. As a planner, I want a roles-first contract layer, so that the method maps to different Hermes profiles and model providers.
-14. As an operator, I want guidance to distinguish portable roles from optional profile templates, so that I can adapt the method without copying Jay's estate.
+14. As an operator, I want guidance to distinguish portable roles from optional profile templates, so that I can adapt the method without copying the originator's estate.
 15. As a user of a different model family, I want the guidance to avoid assuming GLM behaviour, so that the method remains honest across Claude, GPT, local, and other models.
 16. As a reader, I want model-specific results labelled as worked examples, so that examples are not mistaken for universal baselines.
 17. As a user, I want to classify task risk before execution, so that low-confidence or high-impact work is not treated like routine work.
@@ -97,7 +97,7 @@ The plugin owns installation and activation. The bundle is distributed from a st
 - A dispatch adapter interface or non-inline backend implementation.
 - Templates and kanban seeds beyond the calibration artifacts explicitly listed above.
 - Independent skill versioning.
-- Importing or relabelling Jay's real calibration records.
+- Importing or relabelling the originator's real calibration records.
 
 ## Further Notes
 

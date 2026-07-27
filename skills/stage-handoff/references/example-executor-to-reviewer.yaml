@@ -9,17 +9,17 @@ completed_actions:
     result: "One-line change applied"
     evidence_ref: "git diff a1b2c3d..b2c3d4e -- src/api/orders/pagination.ts"
     timestamp: "2026-07-24T14:10:00Z"
-    actor: "coder (executor)"
+    actor: "executor"
   - action: "Added regression test: 3-page pagination (10, 10, 5 items)"
     result: "New describe block in pagination.test.ts"
     evidence_ref: "git diff a1b2c3d..b2c3d4e -- tests/api/orders/pagination.test.ts"
     timestamp: "2026-07-24T14:12:00Z"
-    actor: "coder (executor)"
+    actor: "executor"
   - action: "Ran full test suite"
     result: "All 47 tests passed (2 new), exit code 0"
     evidence_ref: "npm test output (exit 0, 47 passing)"
     timestamp: "2026-07-24T14:15:00Z"
-    actor: "coder (executor)"
+    actor: "executor"
 
 outstanding_work:
   - description: "Review the diff for correctness, edge cases, and style"
@@ -37,7 +37,7 @@ risk_changes: []
 next_action:
   description: "Review the diff for correctness (is the formula right?), edge cases (page 0? page 1? last page?), and confirm the test actually covers the bug. Produce review findings as a stage output envelope."
   role: "reviewer"
-  lane: "worker (fresh context)"
+  lane: "reviewer"
   context: "This is an independent review — you have NOT seen the executor's reasoning, only their output. The diff is at git diff a1b2c3d..b2c3d4e. Contract acceptance criteria: AC-1 (pagination counts), AC-2 (one-line change), AC-3 (all tests pass)."
 
 artifacts:
@@ -52,5 +52,5 @@ artifacts:
     description: "Executor's test run evidence"
 
 timestamp: "2026-07-24T14:16:00Z"
-actor: "coder (executor)"
+actor: "executor"
 session_ref: "session-def456"  # reviewer does NOT inherit this session
