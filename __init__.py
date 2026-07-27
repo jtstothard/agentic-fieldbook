@@ -11,7 +11,7 @@ from typing import Any
 
 PLUGIN_NAME = "agentic-fieldbook"
 PLUGIN_VERSION = "0.1.0"
-HERMES_COMPATIBILITY = ">=0.18.0"
+HERMES_COMPATIBILITY = {"min": "0.18.0", "max": "0.20.0"}
 EXPECTED_COMMANDS = ("setup", "doctor", "version")
 EXPECTED_SKILLS = {
     "lane-calibration", "planning-routing", "risk-taxonomy", "review-calibration",
@@ -30,7 +30,8 @@ def register(ctx: Any) -> None:
 
 def _register_aos_cli(subparsers: Any) -> None:
     parsers = subparsers.add_subparsers(dest="aos_subcommand", title="subcommands", required=True)
-    parsers.add_parser("setup", help="Set up Agentic Fieldbook")
+    setup_parser = parsers.add_parser("setup", help="Set up Agentic Fieldbook")
+    setup_parser.add_argument("--yes", action="store_true", help="accept SOUL.md changes")
     parsers.add_parser("doctor", help="Verify Agentic Fieldbook installation")
     parsers.add_parser("version", help="Show Agentic Fieldbook bundle version")
 
@@ -45,8 +46,85 @@ def _handle_aos_command(args: Any) -> int:
 
 
 def _cmd_setup(args: Any) -> int:
-    print(f"Agentic Fieldbook v{PLUGIN_VERSION} setup — stub")
-    return 0
+    is_compatible, error_msg = _check_hermes_version()
+    if not is_compatible:
+        print(f"ERROR: {error_msg}", file=sys.stderr)
+        print(
+            f"Agentic Fieldbook v{PLUGIN_VERSION} requires Hermes "
+            f"{HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        import hermes
+    except ImportError:
+        print("ERROR: Hermes is unavailable; setup must be run from Hermes", file=sys.stderr)
+        return 1
+    if os.environ.get("AOS_SKILLS_TOOLSET_DISABLED") == "1":
+        print("ERROR: Hermes skills toolset is disabled; enable it before setup", file=sys.stderr)
+        return 1
+    if not _skills_toolset_available(hermes):
+        print("ERROR: Hermes skills toolset is unavailable; enable it before setup", file=sys.stderr)
+        return 1
+
+    print(f"Agentic Fieldbook v{PLUGIN_VERSION} setup")
+    print(f"Compatible with Hermes {HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}")
+    soul = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
+    begin, end = "<!-- aos:begin -->", "<!-- aos:end -->"
+    existing = soul.read_text(encoding="utf-8") if soul.exists() else ""
+    if begin in existing and end in existing:
+        print(f"SOUL.md already contains the managed block: {soul}")
+    else:
+        if not getattr(args, "yes", False) and not sys.stdin.isatty():
+            print("ERROR: setup requires --yes when stdin is not a TTY", file=sys.stderr)
+            return 1
+        if not getattr(args, "yes", False):
+            answer = input("Insert Agentic Fieldbook instructions into SOUL.md? [y/N] ")
+            if answer.strip().lower() not in {"y", "yes"}:
+                print("Setup cancelled; SOUL.md was not modified.")
+                return 1
+        block = f"{begin}\n\nAgentic Fieldbook skills are available for agent workflows.\n\n{end}\n"
+        separator = "\n" if existing and not existing.endswith("\n") else ""
+        soul.parent.mkdir(parents=True, exist_ok=True)
+        soul.write_text(existing + separator + block, encoding="utf-8")
+        print(f"Inserted managed instructions into {soul}")
+    print("Running doctor...")
+    return _cmd_doctor(args)
+
+
+def _parse_version(version_str: str) -> tuple[int, int, int]:
+    parts = version_str.strip().split(".")
+    if len(parts) != 3:
+        raise ValueError(f"Invalid version format: {version_str}")
+    return int(parts[0]), int(parts[1]), int(parts[2])
+
+
+def _check_hermes_version() -> tuple[bool, str]:
+    try:
+        import hermes
+        version_str = getattr(hermes, "__version__", None)
+        if not version_str:
+            return False, "Cannot determine Hermes version: __version__ not found"
+        version = _parse_version(version_str)
+        minimum = _parse_version(HERMES_COMPATIBILITY["min"])
+        maximum = _parse_version(HERMES_COMPATIBILITY["max"])
+        if version < minimum:
+            return False, f"Hermes version {version_str} is below minimum {HERMES_COMPATIBILITY['min']}"
+        if version > maximum:
+            return False, f"Hermes version {version_str} exceeds maximum {HERMES_COMPATIBILITY['max']}"
+        return True, ""
+    except ImportError:
+        return False, "Hermes module not found (running outside Hermes?)"
+    except Exception as exc:
+        return False, f"Version check error: {exc}"
+
+
+def _skills_toolset_available(hermes: Any) -> bool:
+    tools = getattr(hermes, "tools", None)
+    if tools is None:
+        return True
+    enabled = getattr(tools, "skills", None)
+    return enabled is not False
 
 
 def _plugin_root(args: Any = None) -> Path:
@@ -210,7 +288,7 @@ def _cmd_doctor(args: Any) -> int:
 
 def _cmd_version(args: Any) -> int:
     print(f"Agentic Fieldbook v{PLUGIN_VERSION}")
-    print(f"Hermes compatibility: {HERMES_COMPATIBILITY}")
+    print(f"Hermes compatibility: {HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}")
     return 0
 
 
