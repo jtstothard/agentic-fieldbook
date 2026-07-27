@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 from typing import Any
 from .preflight import check_preflight
+from .contract import check_contract
 
 PLUGIN_NAME = "agentic-fieldbook"
 PLUGIN_VERSION = (Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
@@ -126,6 +127,17 @@ def _register_aos_cli(subparsers: Any) -> None:
         help="Name of the Hermes profile to check",
     )
 
+    # contract subcommand
+    contract_parser = aos_subparsers.add_parser(
+        "contract",
+        help="Discover the exact test command for a workspace",
+    )
+    contract_parser.add_argument(
+        "--workspace",
+        required=True,
+        help="Path to the workspace to inspect",
+    )
+
 
 def _handle_aos_command(args: Any) -> int:
     """Handle 'hermes aos' subcommand execution.
@@ -145,6 +157,8 @@ def _handle_aos_command(args: Any) -> int:
         return _cmd_migrate(args)
     elif subcommand == "preflight":
         return _cmd_preflight(args)
+    elif subcommand == "contract":
+        return _cmd_contract(args)
     else:
         print(f"Unknown aos subcommand: {subcommand}")
         return 1
@@ -269,6 +283,15 @@ def _cmd_preflight(args: Any) -> int:
         print("ERROR: --profile is required", file=sys.stderr)
         return 1
     return check_preflight(profile)
+
+
+def _cmd_contract(args: Any) -> int:
+    """Discover and print the test runner command for a workspace."""
+    workspace = getattr(args, "workspace", None)
+    if not workspace:
+        print("ERROR: --workspace is required", file=sys.stderr)
+        return 1
+    return check_contract(workspace)
 
 
 # Metadata for plugin discovery (not used by Hermes plugin loader but useful for tooling)

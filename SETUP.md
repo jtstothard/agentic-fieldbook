@@ -28,6 +28,9 @@ hermes aos doctor
 hermes aos preflight --profile <profile-name>
 # Expected: ✓ All 7 Fieldbook skills available on profile '<profile-name>'
 #          or diagnostic listing missing skills
+
+hermes aos contract --workspace <path-to-worktree>
+# Expected: the exact test command to use for that workspace
 ```
 
 ### Manual install (alternative)
@@ -88,6 +91,29 @@ This stub provides:
 - `hermes aos preflight` — validates Fieldbook skills on target profiles
 
 Full functionality (skills, calibration artifacts, runtime verification) will be added incrementally in following tickets.
+
+## Worktree environments
+
+Git worktrees do not inherit working files from the parent checkout. In particular,
+a `.venv/` in the main checkout is invisible from a worktree, even though both
+worktrees share the same Git object database. Running a guessed command such as
+`.venv/bin/python -m pytest` can therefore fail with "No such file or directory".
+
+Use the contract command before verifying a coding task:
+
+```bash
+hermes aos contract --workspace <path-to-worktree>
+```
+
+It checks for a workspace-local `.venv`, then a shared `.venv` in the parent
+checkout for Git worktrees, followed by `uv.lock`, `tox.ini`, and pytest
+configuration in `pyproject.toml`. The command prints the exact test runner to
+use and exits 1 with an actionable warning if no supported environment is found.
+
+For shared virtual environments, either symlink `.venv` into each worktree or
+document the expected parent path in the contract output. The contract reports
+the discovered path so routers and workers do not need to guess. Non-Python
+runtimes such as npm and cargo are future work and are not currently detected.
 
 ---
 
