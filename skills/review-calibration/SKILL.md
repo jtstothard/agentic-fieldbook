@@ -190,6 +190,44 @@ The intervention that followed a failed calibration is a reusable sequence — d
 - Fixes are applied by a **separate fixer role**, not the reviewer.
 - Low-risk work may combine review-and-fix **only if** the contract explicitly permits it AND automated checks cover the combined operation.
 
+## Solo-maintainer review pattern
+
+Branch-protected repos requiring approving reviews create a deadlock for solo maintainers: the AOS independent review is satisfied, but GitHub blocks self-approval. In this case, **admin merge is an explicit recorded decision, not a bypass**.
+
+### When this applies
+
+- AOS independent review lane has produced findings and disposition (e.g., `approve` with no critical/major defects).
+- The maintainer who authored the work is the only human reviewer available.
+- GitHub branch protection requires approving reviews from others, blocking self-approval.
+
+### Admin-merge checklist
+
+Before admin-merging in solo-maintainer mode:
+
+1. **Review envelope attached** — the independent review report is linked/attached to the PR (comment or file).
+2. **Findings addressed** — all critical/major findings from the review are resolved, with verifiable evidence (tests, fixes, or documented rationale for non-fixes).
+3. **Independence preserved** — the review was produced by a genuinely independent lane (fresh context, frozen input, separate session).
+4. **Decision recorded** — the merge commit message or PR comment cites the review reference and confirms the admin decision.
+
+Record the decision explicitly in the merge commit:
+
+```
+Admin merge: AOS review satisfied, self-approval blocked by branch protection
+Review: <review-reference>
+Findings addressed: <list>
+```
+
+### Branch protection guidance for solo repos
+
+Solo-maintainer repos should use branch protection that acknowledges this pattern:
+
+- **Require approving reviews** for high-risk work — keeps the independent review discipline.
+- **Allow admin bypass** for the maintainer role — documented admin-merge pattern makes this intentional, not a loophole.
+- **Require CI checks** regardless of review status — automated verification remains independent of the self-approval constraint.
+- **Document the pattern** in the repo's contributing guidelines or operations docs so the workflow is transparent.
+
+The pattern preserves the value of independent review while respecting GitHub's technical constraints on single-human teams.
+
 ## Relationship to other skills
 
 - **lane-calibration** — stores calibration results and trust levels.
