@@ -1,0 +1,46 @@
+# Lane Calibration Template
+#
+# This is a blank starting point for recording your first real calibration.
+# Copy this file, replace placeholders with your actual lane details, and
+# run controlled pilot tasks before assigning a risk class.
+#
+# Required fields are populated with safe defaults; optional fields can be
+# added as you accumulate evidence.
+
+lane_id: "your-lane-identifier"
+calibration_status: uncalibrated
+trusted_risk_class: null
+
+model: "your-model-name"
+provider: "your-provider"
+quantization: "none"
+toolset: "web,terminal,file,code_execution"
+
+created_at: "YYYY-MM-DDTHH:MM:SSZ"
+calibrated_at: null
+trusted_at: null
+
+pilot_tasks:
+  - task_id: "pilot-001"
+    task_type: "discovery"
+    task_summary: "First controlled pilot task description"
+    started_at: "YYYY-MM-DDTHH:MM:SSZ"
+    completed_at: "YYYY-MM-DDTHH:MM:SSZ"
+    duration_seconds: 0
+    outcome: passed  # | failed | partial | timeout
+    notes: "Qualitative observations about this pilot"
+
+  # Add more pilots as you run them
+  # - task_id: "pilot-002"
+  #   task_type: "..."
+  #   ...
+
+evidence_summary: ""
+last_verified_at: "YYYY-MM-DDTHH:MM:SSZ"
+staleness_months: 0
+
+fallback_for: null  # Set to primary lane_id if this is a fallback lane
+
+notes: |
+  Free-form notes about this lane.
+  Record patterns, observations, and decisions as you calibrate.
