@@ -81,16 +81,20 @@ class KanbanAdapter:
         if ttl is not None:
             args += ["--ttl", str(ttl)]
         try:
-            self._run(*args)
+            completed = self._run(*args)
         except KanbanAdapterError as exc:
-            # Hermes performs the claim itself with a SQLite BEGIN IMMEDIATE
-            # transaction and a status/claim-lock compare-and-swap. A loser
-            # therefore gets a non-zero CLI result; polling after that failure
-            # would incorrectly report the winner's ``running`` task as our
-            # own claim. Preserve the adapter's named race outcome instead.
+            # Older Hermes CLI versions report a rejected claim as a non-zero
+            # process result. Polling after that failure would incorrectly
+            # report the winner's ``running`` task as our own claim.
             if "cannot claim" in str(exc):
                 raise KanbanAdapterError("lost") from exc
             raise
+
+        # Hermes 0.19.0 can write ``cannot claim ...`` to stderr while still
+        # exiting zero. Treat that semantic CLI failure exactly like the
+        # non-zero form; otherwise the subsequent poll observes the winner.
+        if "cannot claim" in (completed.stdout + completed.stderr):
+            raise KanbanAdapterError("lost")
         return self.poll(task_id)
 
     def poll(self, task_id: str) -> dict[str, Any]:
