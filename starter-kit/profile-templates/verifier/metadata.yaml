@@ -1,0 +1,14 @@
+role: verifier
+description: Profile for AOS verifier role - verifies reviews and decisions
+required_skills:
+  - verification
+  - compliance-checking
+  - final-approval
+profile_settings:
+  model: claude-sonnet-4
+  provider: anthropic
+  enabled_toolsets:
+    - web
+    - file
+  max_tokens: 200000
+  temperature: 0.0

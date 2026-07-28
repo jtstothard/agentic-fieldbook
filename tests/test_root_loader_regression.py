@@ -88,5 +88,6 @@ class TestRootEntrypointLoadsUnderHermesLoader:
         kwargs["setup_fn"](root)
 
         cmds = {c.args[0] for c in sub.add_parser.call_args_list}
-        expected = {"setup", "doctor", "version", "migrate", "preflight", "contract"}
+        # v0.2 adds map-lanes (T01) and first-pilot (T06) commands
+        expected = {"setup", "doctor", "version", "migrate", "preflight", "contract", "map-lanes", "first-pilot"}
         assert cmds == expected, f"Missing: {expected - cmds}, Extra: {cmds - expected}"

@@ -1,0 +1,347 @@
+"""
+Lane-binding configuration schema and persistence for AOS roles.
+
+This module provides:
+- Pydantic schema for aos-lanes.yaml defining AOS roles (planner, executor, reviewer, verifier)
+- File read/write functions that preserve YAML comments and formatting
+- Schema validation logic
+- Logic to handle missing file (treat as all roles unbound) and malformed file (report via doctor)
+- Integration with doctor command to validate binding file existence and schema
+"""
+
+import os
+from pathlib import Path
+from typing import Optional
+from dataclasses import dataclass
+import hashlib
+import json
+
+import yaml
+from pydantic import BaseModel, Field, field_validator, ValidationError
+
+
+class LaneBindingConfigError(Exception):
+    """Exception raised for lane-binding config errors."""
+    pass
+
+
+class WizardOwnershipError(Exception):
+    """Exception raised when wizard cannot take ownership of a hand-edited file."""
+    pass
+
+
+class LaneBindingConfig(BaseModel):
+    """
+    Schema for AOS lane-binding configuration.
+    
+    Maps the four canonical AOS roles to Hermes profiles:
+    - planner: Profile for planning tasks
+    - executor: Profile for executing tasks  
+    - reviewer: Profile for reviewing task outcomes
+    - verifier: Profile for verifying reviews and decisions
+    
+    Roles can be unbound (None), which means the AOS method degrades gracefully
+    for that role.
+    """
+    model_config = {"extra": "forbid"}  # Reject extra fields not in schema
+    
+    planner: Optional[str] = Field(
+        default=None,
+        description="Hermes profile bound to the planner role"
+    )
+    executor: Optional[str] = Field(
+        default=None,
+        description="Hermes profile bound to the executor role"
+    )
+    reviewer: Optional[str] = Field(
+        default=None,
+        description="Hermes profile bound to the reviewer role"
+    )
+    verifier: Optional[str] = Field(
+        default=None,
+        description="Hermes profile bound to the verifier role"
+    )
+
+    @field_validator('planner', 'executor', 'reviewer', 'verifier')
+    @classmethod
+    def validate_profile_name(cls, v: Optional[str]) -> Optional[str]:
+        """Validate that profile names are non-empty strings when provided."""
+        if v is not None:
+            if not isinstance(v, str):
+                raise ValueError("Profile name must be a string")
+            if not v.strip():
+                raise ValueError("Profile name cannot be empty")
+            return v.strip()
+        return None
+
+
+def get_config_path() -> Path:
+    """
+    Get the canonical path to the aos-lanes.yaml config file.
+    
+    Returns:
+        Path: Path to ~/.hermes/aos-lanes.yaml (or custom HERMES_HOME)
+    """
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    return hermes_home / "aos-lanes.yaml"
+
+
+def read_config(config_path: Optional[Path] = None) -> LaneBindingConfig:
+    """
+    Read the lane-binding config file.
+    
+    Args:
+        config_path: Optional custom path. If None, uses get_config_path().
+    
+    Returns:
+        LaneBindingConfig: Parsed configuration. If file doesn't exist,
+                          returns default config with all roles unbound.
+    
+    Raises:
+        LaneBindingConfigError: If file exists but is malformed or invalid.
+    """
+    if config_path is None:
+        config_path = get_config_path()
+    
+    if not config_path.exists():
+        # Missing file is not an error - return all roles unbound
+        return LaneBindingConfig()
+    
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+        
+        if data is None:
+            # Empty file - return all roles unbound
+            return LaneBindingConfig()
+        
+        # Validate and parse
+        return LaneBindingConfig(**data)
+    
+    except yaml.YAMLError as e:
+        raise LaneBindingConfigError(f"Malformed YAML in {config_path}: {e}")
+    except ValidationError as e:
+        raise LaneBindingConfigError(f"Invalid schema in {config_path}: {e}")
+    except Exception as e:
+        raise LaneBindingConfigError(f"Error reading {config_path}: {e}")
+
+
+def write_config(
+    config: LaneBindingConfig,
+    config_path: Optional[Path] = None
+) -> None:
+    """
+    Write the lane-binding config file atomically.
+    
+    Args:
+        config: The configuration to write.
+        config_path: Optional custom path. If None, uses get_config_path().
+    
+    The write is atomic: writes to a temp file first, then renames over target.
+    This avoids corruption if the process is interrupted mid-write.
+    """
+    if config_path is None:
+        config_path = get_config_path()
+    
+    # Ensure parent directory exists
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Serialize to dict for YAML output
+    data = config.model_dump(mode='python')
+    
+    # Add human-readable header comment
+    yaml_content = (
+        "# AOS Lane Bindings\n"
+        "# Generated by 'hermes aos map-lanes' wizard\n"
+        "# Profiles bound to AOS roles (planner, executor, reviewer, verifier)\n"
+        "# Unbound roles (null) will degrade gracefully\n"
+        "#\n"
+        "# Note: This file is owned by the wizard. Direct edits are your responsibility.\n"
+        "# Run 'hermes aos map-lanes' to make changes via the wizard.\n"
+    )
+    
+    # Use standard yaml with inline comments for readability
+    yaml_str = yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    
+    # Write atomically via temp file
+    temp_path = config_path.with_suffix('.tmp')
+    with open(temp_path, 'w', encoding='utf-8') as f:
+        f.write(yaml_content)
+        f.write("\n# Role bindings:\n")
+        f.write(yaml_str)
+    
+    # Atomic rename
+    temp_path.replace(config_path)
+
+
+def validate_binding_file(config_path: Optional[Path] = None) -> dict:
+    """
+    Validate the lane-binding config file for doctor command.
+    
+    Args:
+        config_path: Optional custom path. If None, uses get_config_path().
+    
+    Returns:
+        dict: Validation result with keys:
+            - status: 'ok', 'warning', or 'error'
+            - message: Human-readable status message
+            - details: Additional details (bound roles, errors, etc.)
+    """
+    if config_path is None:
+        config_path = get_config_path()
+    
+    if not config_path.exists():
+        return {
+            "status": "warning",
+            "message": "Lane-binding config file not found",
+            "details": {
+                "file": str(config_path),
+                "note": "Run 'hermes aos map-lanes' to create bindings",
+                "bound_roles": [],
+                "unbound_roles": ["planner", "executor", "reviewer", "verifier"]
+            }
+        }
+    
+    try:
+        config = read_config(config_path)
+        
+        # Count bound/unbound roles
+        bound_roles = []
+        unbound_roles = []
+        
+        for role_name in ["planner", "executor", "reviewer", "verifier"]:
+            profile = getattr(config, role_name)
+            if profile:
+                bound_roles.append(role_name)
+            else:
+                unbound_roles.append(role_name)
+        
+        return {
+            "status": "ok",
+            "message": "Lane-binding config is valid",
+            "details": {
+                "file": str(config_path),
+                "bound_roles": bound_roles,
+                "unbound_roles": unbound_roles,
+                "schema_valid": True
+            }
+        }
+    
+    except LaneBindingConfigError as e:
+        return {
+            "status": "error",
+            "message": "Lane-binding config is invalid",
+            "details": {
+                "file": str(config_path),
+                "error": str(e),
+                "schema_valid": False
+            }
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": "Unexpected error validating lane-binding config",
+            "details": {
+                "file": str(config_path),
+                "error": str(e)
+            }
+        }
+
+
+def _compute_wizard_state(config: LaneBindingConfig) -> str:
+    """Compute a stable hash of wizard state for ownership tracking."""
+    state_dict = config.model_dump(mode='python')
+    state_json = json.dumps(state_dict, sort_keys=True)
+    return hashlib.sha256(state_json.encode('utf-8')).hexdigest()
+
+
+def _is_hand_edited(config_path: Path, wizard_state: str) -> bool:
+    """Check if file appears to have been hand-edited.
+    
+    Returns False for new files (no file yet).
+    Returns False if file has a wizard marker (wizard-owned, can regenerate).
+    Returns True if file has content but no marker (hand-edited or old format).
+    """
+    if not config_path.exists():
+        return False
+    
+    try:
+        content = config_path.read_text(encoding='utf-8')
+    except Exception:
+        return True
+    
+    # Check for wizard state marker - if present, wizard owns file
+    for line in content.split('\n'):
+        if line.strip().startswith('# aos-wizard-state-sha256:'):
+            # File has wizard marker - wizard owns it, can regenerate
+            return False
+    
+    # No state marker found - check if file is empty or just comments
+    try:
+        data = yaml.safe_load(content)
+        if data is None:
+            # Empty file - treat as new, not hand-edited
+            return False
+    except Exception:
+        pass
+    
+    # Has content but no marker - likely hand-edited or old format
+    return True
+
+
+def regenerate_config(config: LaneBindingConfig, config_path: Optional[Path] = None) -> None:
+    """
+    Regenerate the entire config file from wizard state (atomic, ownership-checked).
+    
+    Args:
+        config: The configuration to write.
+        config_path: Optional custom path. If None, uses get_config_path().
+    
+    Raises:
+        WizardOwnershipError: If file was hand-edited and wizard cannot safely overwrite.
+    
+    Writes atomically via temp file + rename, tracking ownership via embedded hash.
+    """
+    if config_path is None:
+        config_path = get_config_path()
+    
+    wizard_state = _compute_wizard_state(config)
+    
+    # Check for hand edits if file exists
+    if config_path.exists() and _is_hand_edited(config_path, wizard_state):
+        raise WizardOwnershipError(
+            f"Cannot overwrite hand-edited config file: {config_path}. "
+            f"Run 'hermes aos map-lanes' with --force to take ownership."
+        )
+    
+    # Ensure parent directory exists
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Serialize to dict for YAML output
+    data = config.model_dump(mode='python')
+    
+    # Add human-readable header comment with ownership marker
+    header = (
+        "# AOS Lane Bindings\n"
+        "# Generated by 'hermes aos map-lanes' wizard\n"
+        "# Profiles bound to AOS roles (planner, executor, reviewer, verifier)\n"
+        "# Unbound roles (null) will degrade gracefully\n"
+        "#\n"
+        "# Note: This file is owned by the wizard. Direct edits are your responsibility.\n"
+        "# Run 'hermes aos map-lanes' to make changes via the wizard.\n"
+        f"# aos-wizard-state-sha256: {wizard_state}\n"
+        "#\n"
+    )
+    
+    # Use standard yaml for readability
+    yaml_str = yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    
+    # Write atomically via temp file
+    temp_path = config_path.with_suffix('.tmp')
+    with open(temp_path, 'w', encoding='utf-8') as f:
+        f.write(header)
+        f.write("# Role bindings:\n")
+        f.write(yaml_str)
+    
+    # Atomic rename
+    os.replace(temp_path, config_path)
