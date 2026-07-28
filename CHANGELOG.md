@@ -5,6 +5,17 @@ All notable changes to Agentic Fieldbook are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-07-28
+
+### Fixed
+
+- Fixed a critical Git-install loader regression where the root plugin entrypoint could not import the package implementation, leaving the `aos` command group completely unavailable (#43)
+- Added a regression test covering Hermes's spec-based plugin loader path
+
+### Testing
+
+- 152 release tests passing
+
 ## [0.2.1] - 2026-07-28
 
 ### Added
