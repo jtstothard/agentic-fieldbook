@@ -40,6 +40,25 @@ Escalate to the normal structured-plan path before acting if any eligibility con
 
 Trivial = a single-step, low-impact task with no irreversible or externally visible side effect (e.g. reading a file, answering a question, or a bounded local edit with an immediate check). When in doubt, treat as non-trivial.
 
+## Complexity floor classifier (mechanical refactors)
+
+**Complexity and risk are orthogonal axes.** A low-risk task can still be bounded or open-ended, requiring more than a trivial fast path. The complexity floor classifier (agentic_fieldbook/complexity_classifier) separates mechanical operations from tasks requiring planning/decomposition:
+
+| Complexity class | Description | Examples | Execution path |
+|---|---|---|---|
+| **trivial** | Zero logic decisions. Pure mechanical refactor, import rename, format pass, find-and-replace. Must meet fast-path eligibility (single atomic action, low risk, reversible, immediate check). | Replace `datetime.utcnow()` with `datetime.now(timezone.utc)`, fix typo, add import, rename variable | Direct execution with condensed contract; bypass full AOS lifecycle |
+| **bounded** | Clear scope, finite known steps. May have logic decisions but all within a single contract. | Add endpoint with specified behavior, implement specific function, fix bug with known reproduction | Contract→execute→review pipeline |
+| **open-ended** | Scope unclear, multiple decisions, may need decomposition or replanning. | "Improve performance", "refactor auth system", "integrate with payment gateway" | Full AOS lifecycle including planning stage |
+
+Use `classify_complexity(issue_title, issue_body, issue_labels)` from `agentic_fieldbook.complexity_classifier` for automated classification. The classifier checks:
+- Complexity floor keywords (e.g., `deprecat`, `utcnow`) as strong signals for trivial
+- Mechanical patterns (rename, replace, fix typo, add import, format)
+- Bounded patterns (add feature, implement function, fix bug)
+- Open-ended patterns (improve, optimize, refactor without specifics, integrate)
+- Fast-path eligibility (no high-risk actions, dependencies, ambiguity)
+
+When in doubt, route as bounded or open-ended. The fast path is an optimization for clear mechanical cases; missing it is harmless, using it for non-trivial tasks is dangerous.
+
 ## Wayfinder tier (destination unclear)
 
 The tiers above assume the *destination* is known — the objective, scope, and acceptance criteria can be stated. When they cannot — when "what does done look like?" is itself unanswered — the task is at the **wayfinder tier**, above all planning tiers. Wayfinding resolves the destination and acceptance criteria through grilling and decision tickets *before* any plan can be written or validated.
