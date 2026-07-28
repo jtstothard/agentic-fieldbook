@@ -5,6 +5,14 @@ All notable changes to Agentic Fieldbook are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-07-28
+
+### Added
+
+- Delivery budget reservation guidance: workers reserve the final 5-10% of iteration budget for commit/push/PR/kanban_complete mechanics, preventing budget exhaustion during delivery (#37)
+- Budget-exhaustion handoff format: workers emit explicit workspace snapshots (git status, pending commits, partial artifacts) when they cannot complete delivery (#37)
+- `limits.iterations` field in the contract schema and template (#37)
+
 ## [0.2.0] - 2026-07-28
 
 ### Added
