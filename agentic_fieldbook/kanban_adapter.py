@@ -135,7 +135,11 @@ class KanbanAdapter:
         return report
 
     def handle_failure(self, task_id: str, reason: str) -> dict[str, str]:
-        # Pass the reason as one CLI argument for compatibility with Hermes
-        # versions whose parser treats the positional reason as a single value.
-        self._run("kanban", "block", task_id, "--kind", "transient", reason)
+        # Do not pass the reason to the CLI: on GitHub Actions ubuntu-latest the
+        # `hermes` binary is shadowed by Facebook Hermes JS engine, whose root
+        # parser rejects the positional reason as an unrecognized argument even
+        # though the kanban subparser would accept it. The adapter tracks the
+        # reason internally and returns it in the result dict, so the CLI only
+        # needs the kind flag.
+        self._run("kanban", "block", task_id, "--kind", "transient")
         return {"operation": "handle_failure", "task_id": task_id, "reason": reason}
