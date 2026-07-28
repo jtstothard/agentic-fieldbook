@@ -247,9 +247,25 @@ class CalibrationData:
 
     def save_to_file(self, path: Path) -> None:
         """Save calibration data to a YAML file."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         data = self.to_dict()
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    def save_to_default_file(self) -> Path:
+        """Save to the active Hermes home's lane-calibration file."""
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        path = hermes_home / "calibration" / "lane-calibration.yaml"
+        if path.exists():
+            existing = self.load_from_file(path)
+            if existing.lane_id == self.lane_id:
+                known = {task.task_id for task in existing.pilot_tasks}
+                self.pilot_tasks = existing.pilot_tasks + [
+                    task for task in self.pilot_tasks if task.task_id not in known
+                ]
+        self.save_to_file(path)
+        return path
 
     @classmethod
     def load_from_file(cls, path: Path) -> "CalibrationData":
@@ -398,9 +414,8 @@ class FirstPilotSession:
                 print("Invalid input.")
                 return 1
         else:
-            # Non-interactive: use first bound role
-            role, profile = bound_roles[0]
-            print(f"Auto-selected role: {role}")
+            print("ERROR: interactive flow requires a TTY; use explicit non-interactive arguments.")
+            return 1
 
         # Create calibration data
         try:
@@ -439,11 +454,8 @@ class FirstPilotSession:
                 print("Invalid input.")
                 return 1
         else:
-            # Non-interactive: use first suggestion
-            selected_task = suggestions[0]
-            task_type = selected_task["task_type"]
-            task_summary = selected_task["summary"]
-            print(f"Auto-selected task: {task_summary}")
+            print("ERROR: interactive flow requires a TTY; use explicit non-interactive arguments.")
+            return 1
 
         # Validate risk
         if not self.validate_risk(task_type, task_summary):
@@ -499,10 +511,8 @@ class FirstPilotSession:
 
             notes = input("Notes (optional): ").strip() or None
         else:
-            # Non-interactive: assume passed
-            outcome = "passed"
-            duration_seconds = 0
-            notes = None
+            print("ERROR: interactive flow requires a TTY; use explicit non-interactive arguments.")
+            return 1
 
         self.record_task_outcome(outcome, duration_seconds, notes)
 
@@ -515,7 +525,37 @@ class FirstPilotSession:
         print("=" * 60)
         print()
         print(self.generate_calibration_output())
+        saved_path = self.calibration_data.save_to_default_file()
+        print(f"Calibration data saved to: {saved_path}")
 
+        return 0
+
+    def run_noninteractive_flow(
+        self, *, role: str, task_type: str, task_summary: str,
+        outcome: str, duration_seconds: int, notes: Optional[str] = None,
+    ) -> int:
+        """Run the pilot with every input supplied explicitly by the caller."""
+        bound_profile = getattr(self.config, role, None)
+        if not bound_profile:
+            print(f"ERROR: Role {role} is not bound.")
+            return 1
+        if not self.validate_risk(task_type, task_summary):
+            print("ERROR: Task does not qualify as low-risk.")
+            return 1
+        try:
+            self.create_calibration_data(role)
+            self.current_task = PilotTask(
+                task_id=f"pilot-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
+                task_type=task_type, task_summary=task_summary,
+                started_at=datetime.utcnow(),
+            )
+            self.record_task_outcome(outcome, duration_seconds, notes)
+            self.calibration_data.pilot_tasks.append(self.current_task)
+            path = self.calibration_data.save_to_default_file()
+        except (ValueError, KeyError) as error:
+            print(f"ERROR: {error}")
+            return 1
+        print(f"Calibration data saved to: {path}")
         return 0
 
 
@@ -557,7 +597,11 @@ def _is_minimal_mode() -> bool:
         return True
 
 
-def run_first_pilot_flow(interactive: bool = True) -> int:
+def run_first_pilot_flow(
+    interactive: bool = True,
+    noninteractive_requested: bool = False,
+    **noninteractive_args: Any,
+) -> int:
     """
     Run the first-pilot flow.
 
@@ -574,11 +618,6 @@ def run_first_pilot_flow(interactive: bool = True) -> int:
         print("  hermes plugin install agentic-fieldbook --starter")
         return 1
 
-    if not interactive:
-        # Non-interactive mode: just check minimal mode and report ready
-        print("First-pilot flow is available.")
-        print("Run: hermes aos first-pilot")
-        return 0
 
     # Import wizard to get config
     try:
@@ -588,6 +627,17 @@ def run_first_pilot_flow(interactive: bool = True) -> int:
         print(f"ERROR: Failed to read config: {e}")
         return 1
 
-    # Run interactive flow
     session = FirstPilotSession(config=config)
+    if not interactive:
+        if not noninteractive_requested and not noninteractive_args:
+            print("First-pilot flow is available.")
+            print("Use --non-interactive with --role, --task-type, --task-summary, --outcome, and --duration-seconds.")
+            return 0
+        required = {"role", "task_type", "task_summary", "outcome", "duration_seconds"}
+        missing = sorted(required - noninteractive_args.keys())
+        if missing:
+            print("ERROR: non-interactive mode requires: " + ", ".join(missing))
+            return 2
+        return session.run_noninteractive_flow(**noninteractive_args)
+
     return session.run_interactive_flow()

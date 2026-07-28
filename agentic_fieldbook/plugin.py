@@ -163,10 +163,18 @@ def _register_aos_cli(subparsers: Any) -> None:
     )
 
     # first-pilot subcommand (T06)
-    aos_subparsers.add_parser(
+    first_pilot_parser = aos_subparsers.add_parser(
         "first-pilot",
         help="Guided first-pilot flow for calibration (T06)",
     )
+    first_pilot_parser.add_argument("--non-interactive", action="store_true",
+                                    help="Require explicit task inputs; never auto-select")
+    first_pilot_parser.add_argument("--role")
+    first_pilot_parser.add_argument("--task-type")
+    first_pilot_parser.add_argument("--task-summary")
+    first_pilot_parser.add_argument("--outcome")
+    first_pilot_parser.add_argument("--duration-seconds", type=int)
+    first_pilot_parser.add_argument("--notes")
 
 
 def _handle_aos_command(args: Any) -> int:
@@ -568,6 +576,20 @@ def _cmd_first_pilot(args: Any) -> int:
     """Run the guided first-pilot flow for calibration data collection (T06)."""
     try:
         from .first_pilot import run_first_pilot_flow
+        if getattr(args, "non_interactive", False):
+            values = {
+                "role": getattr(args, "role", None),
+                "task_type": getattr(args, "task_type", None),
+                "task_summary": getattr(args, "task_summary", None),
+                "outcome": getattr(args, "outcome", None),
+                "duration_seconds": getattr(args, "duration_seconds", None),
+                "notes": getattr(args, "notes", None),
+            }
+            return run_first_pilot_flow(
+                interactive=False,
+                noninteractive_requested=True,
+                **{key: value for key, value in values.items() if value is not None},
+            )
         return run_first_pilot_flow(interactive=True)
     except ImportError:
         print("ERROR: first_pilot module not available", file=sys.stderr)

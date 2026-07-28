@@ -28,10 +28,19 @@ def discover_profiles() -> List[str]:
         List[str]: List of profile names found in ~/.hermes/profiles/
     """
     hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    # When Hermes is launched with ``-p NAME``, HERMES_HOME may point at the
+    # profile directory itself (…/.hermes/profiles/NAME), not the global home.
+    # Prefer the normal global layout, then walk back to it from a profile dir.
     profiles_dir = hermes_home / "profiles"
+    if not profiles_dir.is_dir() and hermes_home.parent.name == "profiles":
+        profiles_dir = hermes_home.parent
     
     if not profiles_dir.exists():
-        return []
+        if "HERMES_HOME" not in os.environ:
+            return []
+        raise RuntimeError(f"Hermes profiles directory does not exist: {profiles_dir}")
+    if not profiles_dir.is_dir():
+        raise RuntimeError(f"Hermes profiles path is not a directory: {profiles_dir}")
     
     profiles = []
     for profile_path in profiles_dir.iterdir():
