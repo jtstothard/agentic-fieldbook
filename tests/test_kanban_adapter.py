@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -10,6 +11,13 @@ from pathlib import Path
 import pytest
 
 from agentic_fieldbook.kanban_adapter import KanbanAdapter, KanbanAdapterError
+
+# These tests invoke the real Hermes CLI. Skip the entire module when the
+# binary is not on PATH (e.g. GitHub Actions runners that do not install Hermes).
+pytestmark = pytest.mark.skipif(
+    shutil.which("hermes") is None,
+    reason="hermes CLI not available — integration tests require the binary on PATH",
+)
 
 
 @pytest.fixture

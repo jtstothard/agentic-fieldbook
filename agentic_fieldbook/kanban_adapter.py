@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,13 @@ class KanbanAdapter:
     def __init__(self, *, home: Path, board: str = "shadow") -> None:
         self.home = Path(home)
         self.board = board
+        # Hermes' SQLite claim is atomic across processes, but the adapter can
+        # also be called concurrently by several threads.  Serialize the
+        # claim-and-observe sequence so a thread cannot observe the winner's
+        # ``running`` state after another thread has already claimed the task.
+        # This is an adapter-level ownership gate; the CLI remains the source
+        # of truth for claims made by other adapter instances/processes.
+        self._claim_lock = threading.Lock()
         self.home.mkdir(parents=True, exist_ok=True)
         self._run("kanban", "init")
         boards = self._run("kanban", "boards", "list").stdout
@@ -77,21 +85,35 @@ class KanbanAdapter:
         return self._json(self._run(*args).stdout)
 
     def claim(self, task_id: str, *, ttl: int | None = None) -> dict[str, Any]:
-        args = ["kanban", "claim", task_id]
-        if ttl is not None:
-            args += ["--ttl", str(ttl)]
-        try:
-            self._run(*args)
-        except KanbanAdapterError as exc:
-            # Hermes performs the claim itself with a SQLite BEGIN IMMEDIATE
-            # transaction and a status/claim-lock compare-and-swap. A loser
-            # therefore gets a non-zero CLI result; polling after that failure
-            # would incorrectly report the winner's ``running`` task as our
-            # own claim. Preserve the adapter's named race outcome instead.
-            if "cannot claim" in str(exc):
-                raise KanbanAdapterError("lost") from exc
-            raise
-        return self.poll(task_id)
+        with self._claim_lock:
+            args = ["kanban", "claim", task_id]
+            if ttl is not None:
+                args += ["--ttl", str(ttl)]
+
+            # Do not infer ownership from ``show``: it reports shared task
+            # state, so a loser can otherwise mistake the winner's running
+            # task for its own.  Hermes 0.19.0's claim command has no JSON
+            # response; its atomic claim result is the process result and
+            # output, both of which must be inspected before polling.
+            completed = subprocess.run(
+                ["hermes", *args],
+                env=self._env(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            semantic_loss = "cannot claim" in (completed.stdout + completed.stderr).lower()
+            if completed.returncode != 0 or semantic_loss:
+                if semantic_loss:
+                    raise KanbanAdapterError("lost")
+                detail = (completed.stderr or completed.stdout).strip()
+                raise KanbanAdapterError(f"kanban claim failed: {detail}")
+
+            if not completed.stdout.startswith("Claimed "):
+                raise KanbanAdapterError(
+                    f"kanban claim returned unexpected output: {completed.stdout!r}"
+                )
+            return self.poll(task_id)
 
     def poll(self, task_id: str) -> dict[str, Any]:
         return self._json(self._run("kanban", "show", task_id, "--json").stdout)["task"]
