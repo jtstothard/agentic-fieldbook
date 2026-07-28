@@ -27,8 +27,8 @@ setup(
     python_requires=">=3.9",
     # Hermes will load plugin.py during plugin initialization
     entry_points={
-        "hermes.plugins": [
-            "agentic-fieldbook = agentic_fieldbook.plugin:register_cli_commands",
+        "hermes_agent.plugins": [
+            "agentic-fieldbook = agentic_fieldbook.plugin:register",
         ],
     },
 )

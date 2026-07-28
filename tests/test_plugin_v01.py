@@ -62,12 +62,12 @@ class TestCommandStubs:
                     assert "Inserted managed instructions" in captured.out
 
     def test_doctor_command_returns_zero(self, capsys):
-        """Doctor command stub should print message and return 0."""
+        """Doctor command should run the real verification and return 0."""
         result = _cmd_doctor(Namespace())
         captured = capsys.readouterr()
         assert result == 0
         assert "Agentic Fieldbook" in captured.out
-        assert "doctor — stub" in captured.out
+        assert "ALL CLEAR" in captured.out  # Real doctor outputs "ALL CLEAR"
 
     def test_version_command_returns_zero_and_shows_version(self, capsys):
         """Version command should show bundle version and compatibility."""
@@ -437,11 +437,12 @@ class TestDoctorDetection:
         assert "doctor" in captured.out.lower()
 
     def test_doctor_stub_mentions_verification(self, capsys):
-        """Doctor stub should mention verification is coming."""
+        """Doctor should run real verification checks."""
         result = _cmd_doctor(Namespace())
         captured = capsys.readouterr()
         assert result == 0
-        assert "verification" in captured.out.lower() or "checks" in captured.out.lower()
+        # Real doctor outputs "ALL CLEAR: skills, references, calibration schema, cross-skill names, and CLI registration verified"
+        assert "verified" in captured.out.lower()
 
 
 class TestGatewayDetection:

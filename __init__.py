@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ PLUGIN_NAME = "agentic-fieldbook"
 _VERSION_FILE = Path(__file__).with_name("VERSION")
 PLUGIN_VERSION = _VERSION_FILE.read_text(encoding="utf-8").strip()
 HERMES_COMPATIBILITY = {"min": "0.18.0", "max": "0.20.0"}
-EXPECTED_COMMANDS = ("setup", "doctor", "version", "migrate")
+EXPECTED_COMMANDS = ("setup", "doctor", "version", "migrate", "preflight", "contract")
 EXPECTED_SKILLS = {
     "lane-calibration", "planning-routing", "risk-taxonomy", "review-calibration",
     "stage-handoff", "contract-schema", "knowledge-lifecycle",
@@ -22,30 +23,49 @@ __version__ = PLUGIN_VERSION
 
 
 def register(ctx: Any) -> None:
+    """Register plugin commands by delegating to the package implementation.
+
+    This ensures the root entrypoint (used by git installs) and the package
+    entrypoint (used by pip installs) expose exactly the same CLI commands.
+    """
+    # Import the package's CLI registration to maintain one source of truth
+    from agentic_fieldbook.plugin import _register_aos_cli
+
     ctx.register_cli_command(
         name="aos", help="Agentic Fieldbook commands", setup_fn=_register_aos_cli,
         handler_fn=_handle_aos_command,
-        description="Agentic Fieldbook — setup, doctor, and version commands.",
+        description="Agentic Fieldbook — setup, doctor, version, migrate, preflight, contract.",
     )
 
 
-def _register_aos_cli(subparsers: Any) -> None:
-    parsers = subparsers.add_subparsers(dest="aos_subcommand", title="subcommands", required=True)
-    setup_parser = parsers.add_parser("setup", help="Set up Agentic Fieldbook")
-    setup_parser.add_argument("--yes", action="store_true", help="accept SOUL.md changes")
-    parsers.add_parser("doctor", help="Verify Agentic Fieldbook installation")
-    parsers.add_parser("version", help="Show Agentic Fieldbook bundle version")
-    parsers.add_parser("migrate", help="Apply bundle migrations (v0.1: no-op)")
-
-
 def _handle_aos_command(args: Any) -> int:
+    """Dispatch aos subcommands to their handlers.
+
+    This bridges the CLI registration (from the package) with the root's
+    command implementations, preserving the root's real doctor and version gap
+    checking logic while gaining the package's preflight/contract commands.
+    """
     subcommand = getattr(args, "aos_subcommand", None)
     if subcommand == "setup": return _cmd_setup(args)
     if subcommand == "doctor": return _cmd_doctor(args)
     if subcommand == "version": return _cmd_version(args)
     if subcommand == "migrate": return _cmd_migrate(args)
+    if subcommand == "preflight": return _cmd_preflight(args)
+    if subcommand == "contract": return _cmd_contract(args)
     print(f"Unknown aos subcommand: {subcommand}")
     return 1
+
+
+def _cmd_preflight(args: Any) -> int:
+    """Check if all Fieldbook skills are available on the target profile."""
+    from agentic_fieldbook.plugin import _cmd_preflight as package_preflight
+    return package_preflight(args)
+
+
+def _cmd_contract(args: Any) -> int:
+    """Discover and print the test runner command for a workspace."""
+    from agentic_fieldbook.plugin import _cmd_contract as package_contract
+    return package_contract(args)
 
 
 def _cmd_setup(args: Any) -> int:
@@ -96,10 +116,24 @@ def _cmd_setup(args: Any) -> int:
         print(f"Inserted managed instructions into {soul}")
     print("Running doctor...")
     doctor_result = _cmd_doctor(args)
-    if doctor_result == 0 and _gateway_is_running():
-        print()
-        print("Restart the gateway for the plugin to take effect:")
-        print("  hermes gateway restart")
+
+    # Profile-aware gateway messaging
+    profile = _get_hermes_profile()
+    if doctor_result == 0:
+        if _profile_has_gateway(profile):
+            # Gateway profile
+            if _gateway_is_running_for_profile(profile):
+                print()
+                print("Restart the gateway for the plugin to take effect:")
+                print("  hermes gateway restart")
+            else:
+                print()
+                print("Start the gateway for the plugin to take effect:")
+                print("  hermes gateway start")
+        else:
+            # Non-gateway profile (CLI/worker/TUI)
+            print()
+            print("Setup complete. The plugin is active for the next CLI/worker invocation.")
     return doctor_result
 
 
@@ -140,13 +174,80 @@ def _hermes_runtime_module() -> Any:
         return hermes_cli
 
 
-def _gateway_is_running() -> bool:
-    """Detect if Hermes gateway is running for this profile.
+def _get_hermes_profile() -> str | None:
+    """Get the target Hermes profile name from environment.
 
-    Checks for gateway-related environment variables that indicate
-    a gateway session. Non-gateway profiles (CLI-only, dogfood, TUI)
-    won't have these set.
+    Returns None if running in the default profile or profile cannot be determined.
     """
+    # HERMES_PROFILE is set when using -p/--profile flag
+    profile = os.environ.get("HERMES_PROFILE")
+    if profile and profile != "default":
+        return profile
+
+    # Check if HERMES_HOME points to a profile-specific directory
+    hermes_home = os.environ.get("HERMES_HOME", "")
+    if "/profiles/" in hermes_home:
+        # Extract profile name from path like ~/.hermes/profiles/coder
+        parts = Path(hermes_home).parts
+        if "profiles" in parts:
+            idx = parts.index("profiles")
+            if idx + 1 < len(parts):
+                profile_name = parts[idx + 1]
+                if profile_name != "default":
+                    return profile_name
+
+    return None
+
+
+def _profile_has_gateway(profile: str | None) -> bool:
+    """Check if a profile has gateway configured.
+
+    Uses hermes profile show to determine if the profile runs a gateway.
+    Returns False if profile is None (default profile may have gateway but we assume no).
+
+    This is profile-scoped: it checks the target profile's config, not inherited env vars.
+    """
+    if profile is None:
+        # Default profile or couldn't determine profile - assume no gateway for safety
+        return False
+
+    try:
+        result = subprocess.run(
+            ["hermes", "profile", "show", profile],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+
+        # hermes profile show output includes "Gateway: running" or "Gateway: stopped"
+        # Any gateway status means the profile has gateway configured
+        return "Gateway:" in result.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return False
+
+
+def _gateway_is_running_for_profile(profile: str | None) -> bool:
+    """Check if gateway is currently running for the target profile.
+
+    This is the profile-aware version of _gateway_is_running.
+    It combines:
+    1. Profile config check (does this profile have a gateway?)
+    2. Runtime check (is that gateway actually running?)
+
+    This prevents false positives from env var bleed when running:
+      hermes -p <dogfood> aos setup
+
+    where the parent gateway process leaks env vars but the target profile
+    is non-gateway (CLI/worker/TUI).
+    """
+    # First check: does this profile even have a gateway configured?
+    if not _profile_has_gateway(profile):
+        return False
+
+    # Second check: is a gateway actually running (env vars as fallback)
+    # This handles the case where the profile has gateway but it's stopped
     gateway_indicators = [
         "HERMES_GATEWAY_BUSY_INPUT_MODE",
         "HERMES_DASHBOARD_PORT",
@@ -416,9 +517,25 @@ def _check_cross_skill_names(root: Path) -> list[str]:
 
 
 def _check_cli_registration() -> list[str]:
-    source = inspect.getsource(_register_aos_cli)
-    return [f"cli-registration: missing command {name}" for name in EXPECTED_COMMANDS
-            if not re.search(rf'add_parser\(\s*["\']{re.escape(name)}["\']', source)]
+    # Check the package's CLI registration since root delegates to it
+    from agentic_fieldbook.plugin import _register_aos_cli as package_register
+    source = inspect.getsource(package_register)
+    missing = []
+    for name in EXPECTED_COMMANDS:
+        # Look for add_parser calls - they may be multi-line like:
+        #   aos_subparsers.add_parser(
+        #       "setup",
+        # or
+        #   setup_parser = aos_subparsers.add_parser(
+        #       "setup",
+        # So we check for the presence of both add_parser and the quoted name
+        if 'add_parser' not in source:
+            missing.append(f"cli-registration: missing command {name} (no add_parser)")
+            continue
+        # Check for the name being quoted in either single or double quotes
+        if f'"{name}"' not in source and f"'{name}'" not in source:
+            missing.append(f"cli-registration: missing command {name}")
+    return missing
 
 
 def _doctor_failures(root: Path) -> list[str]:

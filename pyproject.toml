@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentic-fieldbook"
-version = "0.2.0"
+version = "0.2.1"
 description = "An operating methodology for autonomous agents — Hermes plugin bundle"
 authors = [{ name = "Jay Stothard", email = "jtstothard@gmail.com" }]
 readme = "README.md"

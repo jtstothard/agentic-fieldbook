@@ -355,11 +355,31 @@ def _gateway_is_running() -> bool:
 
 
 def _cmd_doctor(args: Any) -> int:
-    """Stub doctor command (v0.1)."""
-    print(f"Agentic Fieldbook v{PLUGIN_VERSION} doctor — stub")
-    print("Full doctor verification will be added in later tickets.")
-    print("This stub proves command registration; real checks coming soon.")
-    return 0
+    """Doctor command - delegates to the real implementation from the root entrypoint.
+
+    The root __init__.py contains the real doctor verification logic (skill loadability,
+    reference resolution, calibration schema validation, cross-skill name consistency,
+    and CLI registration). This function delegates to that implementation to maintain
+    a single source of truth for doctor behavior across both entrypoints.
+    """
+    # Import the root's real doctor implementation
+    import importlib.util
+    from pathlib import Path
+
+    # Find the plugin root (where __init__.py lives)
+    # In package context, we're at agentic_fieldbook/plugin.py, so root is parent.parent
+    plugin_root = Path(__file__).resolve().parent.parent
+
+    # Load the root __init__.py directly
+    spec = importlib.util.spec_from_file_location("_root_doctor_impl", plugin_root / "__init__.py")
+    if spec is None or spec.loader is None:
+        print("ERROR: Cannot load root doctor implementation", file=sys.stderr)
+        return 1
+    root_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(root_module)
+
+    # Call the root's _cmd_doctor
+    return root_module._cmd_doctor(args)
 
 
 def _cmd_version(args: Any) -> int:
