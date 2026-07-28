@@ -546,15 +546,12 @@ def _cmd_contract(args: Any) -> int:
 
 
 def _cmd_map_lanes(args: Any) -> int:
-    """Profile mapping wizard (T02-T03).
-
-    Stub implementation in T01. Full interactive wizard coming in T03.
-    """
-    # Check if --interactive flag is set
+    """Run the profile-mapping wizard when explicitly requested."""
+    # The no-argument path remains a non-interactive compatibility stub;
+    # --interactive runs the T03 wizard.
     interactive = getattr(args, "interactive", False)
 
     if interactive:
-        # T03: Full interactive wizard
         try:
             from .wizard import run_wizard
             return run_wizard()
@@ -562,10 +559,8 @@ def _cmd_map_lanes(args: Any) -> int:
             print("ERROR: wizard module not available", file=sys.stderr)
             return 1
     else:
-        # T01/T02: Coming soon message
-        print("Profile mapping wizard coming in T03.")
-        print("T02 will add lane-binding config file schema and persistence.")
-        print("T03 will add the interactive wizard flow.")
+        print("Profile mapping wizard is available via --interactive; the coming-soon stub remains non-interactive.")
+        print("Lane bindings are persisted in the AOS configuration file.")
         return 0
 
 
