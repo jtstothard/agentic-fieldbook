@@ -18,11 +18,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
-def test_v01_has_no_dispatch_module():
-    """v0.1 does not have a dispatch module — dispatch is implicit."""
-    # Attempting to import dispatch should fail
-    with pytest.raises(ImportError):
-        import agentic_fieldbook.dispatch  # noqa: F401
+def test_v01_dispatch_seam_is_extracted_as_inline_default():
+    """The v0.3 extraction exposes the former implicit inline path."""
+    import agentic_fieldbook.dispatch as dispatch_mod
+    assert dispatch_mod.get_default_adapter().__class__.__name__ == "InlineAdapter"
 
 
 def test_v01_methods_execute_inline_via_delegatetask_or_terminal():
