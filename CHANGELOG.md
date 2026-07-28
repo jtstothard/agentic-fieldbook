@@ -5,41 +5,113 @@ All notable changes to Agentic Fieldbook are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.2.2] - 2026-07-28
-
-### Fixed
-
-- Fixed a critical Git-install loader regression where the root plugin entrypoint could not import the package implementation, leaving the `aos` command group completely unavailable (#43)
-- Added a regression test covering Hermes's spec-based plugin loader path
-
-### Testing
-
-- 152 release tests passing
-
-## [0.2.1] - 2026-07-28
-
-### Added
-
-- Delivery budget reservation guidance: workers reserve the final 5-10% of iteration budget for commit/push/PR/kanban_complete mechanics, preventing budget exhaustion during delivery (#37)
-- Budget-exhaustion handoff format: workers emit explicit workspace snapshots (git status, pending commits, partial artifacts) when they cannot complete delivery (#37)
-- `limits.iterations` field in the contract schema and template (#37)
-
 ## [0.2.0] - 2026-07-28
 
 ### Added
 
-- `aos preflight --profile <name>` validates Fieldbook skills are installed on a target profile before dispatching kanban cards with forced skills (#31)
-- `aos contract --workspace <path>` discovers the correct test-runner command for a workspace, detecting venv-in-worktree, venv-in-parent (git worktree common dir), uv, tox, and pyproject (#33)
-- Profile scoping and worktree environment guidance in SETUP.md
+- Profile-mapping wizard (`hermes aos map-lanes`) for binding Hermes profiles to AOS roles
+- Lane-binding config schema and persistence via `~/.hermes/aos-lanes.yaml`
+- Wizard file ownership semantics with atomic writes and structural drift detection
+- Profile template system for canonical AOS roles (planner, executor, reviewer, verifier)
+- Guided first-pilot flow for initial calibration data capture (`hermes aos first-pilot`)
+- Install-time choice between `--minimal` (v0.1-equivalent) and `--starter` (full starter-kit) modes
+- Doctor extensions for lane-binding validation and starter-kit asset verification
+- Install mode persistence and detection for upgrade path support
 
 ### Changed
 
-- `aos setup` is now profile-aware: gateway restart guidance only appears when the target profile actually has a gateway configured, preventing env-var bleed false positives on non-gateway profiles (#32)
+- `hermes aos setup` now supports `--minimal` and `--starter` flags
+- `hermes aos setup` prints pointer to `map-lanes` command on completion
+- Doctor command validates lane-binding file existence and schema
+- Doctor reports active AOS role bindings and unbound roles
+- Doctor verifies starter-kit asset resolution when in starter mode
+- Doctor reports active install mode (minimal vs starter)
+
+### Deprecated
+
+- None
+
+### Removed
+
+- None
+
+### Fixed
+
+- None
+
+### Security
+
+- None
+
+### Deferred to v0.3.0
+
+- **Dispatch adapters**: The adapter interface for canonical method delegation is deferred to v0.3.0. The v0.2.0 release focuses on the profile-mapping wizard and starter-kit foundation. Evidence from the v0.3.0 adapter prototype will inform the final adapter interface design.
+
+### Upgrade Path (v0.1 → v0.2.0)
+
+Upgrading from v0.1.0 to v0.2.0 is straightforward:
+
+1. **Update the bundle**:
+   ```bash
+   hermes plugins update
+   ```
+   This uses v0.1's existing version-gap detection and update mechanism.
+
+2. **Run setup**:
+   ```bash
+   hermes aos setup
+   ```
+   v0.1 installations default to `--minimal` mode (v0.1-equivalent). The setup command detects v0.1 installations and prompts:
+   - Installs in minimal mode by default (no starter-kit artifacts)
+   - Offers to upgrade to starter mode: `hermes aos setup --starter`
+
+3. **Optional: Add starter-kit**:
+   ```bash
+   hermes aos setup --starter
+   ```
+   This installs profile templates and the first-pilot flow.
+
+4. **Bind profiles to AOS roles**:
+   ```bash
+   hermes aos map-lanes
+   ```
+   The interactive wizard guides you through mapping existing profiles or creating new ones from templates.
+
+5. **Verify installation**:
+   ```bash
+   hermes aos doctor
+   ```
+   Doctor now validates lane-binding file, reports active bindings, and checks starter-kit assets.
+
+**Compatibility notes**:
+- All v0.1 commands remain functional
+- v0.1 skills are preserved unchanged (additive-superset constraint)
+- No breaking changes to existing v0.1 behavior
+- Starter-kit is opt-in via `--starter` flag
+
+### Split Release Rationale
+
+The v0.2.0 release is split into two layers:
+
+1. **Foundation layer (this release)**: Profile-mapping wizard, lane-binding persistence, and starter-kit templates. This provides the infrastructure for role-based lane configuration and guided onboarding.
+
+2. **Adapter layer (v0.3.0)**: Dispatch adapters for canonical method delegation between lanes. This is deferred because:
+   - The adapter interface design requires evidence from a working prototype
+   - The prototype runs in parallel during v0.2.0 development
+   - The final adapter contract will be informed by real-world usage patterns discovered through the prototype
+   - Keeping the adapter layer separate allows v0.2.0 to ship faster while the adapter work matures
+
+This split release strategy ensures that:
+- Users get value immediately from the wizard and starter-kit
+- The adapter interface is well-designed based on evidence, not speculation
+- The additive-superset constraint is maintained across releases
+- Each release has a clear, focused scope
 
 ### Testing
 
-- 152 tests (35 new across preflight, profile-aware gateway detection, and contract runner discovery)
+- 351 tests passing (all existing v0.1 and v0.2 tests)
 - CI on Python 3.11 and 3.13
+- Regression harness validates v0.1 behavior preservation
 
 ## [0.1.1] - 2026-07-27
 

@@ -544,6 +544,85 @@ def _check_cli_registration() -> list[str]:
     return missing
 
 
+def _check_lane_binding_file() -> list[str]:
+    """Validate lane-binding config file existence and schema."""
+    failures = []
+    from agentic_fieldbook.config import validate_binding_file, get_config_path
+    
+    result = validate_binding_file()
+    
+    if result["status"] == "error":
+        failures.append(f"lane-binding-config: {result['message']} - {result['details'].get('error', '')}")
+    elif result["status"] == "warning":
+        # Missing file is a warning, not a hard failure
+        # Still report it but don't fail the whole check
+        pass
+    
+    return failures
+
+
+def _check_starter_kit_assets() -> list[str]:
+    """Verify starter-kit asset resolution when --starter installed."""
+    failures = []
+    from agentic_fieldbook.plugin import get_install_mode
+    
+    install_mode = get_install_mode()
+    
+    # If minimal mode or unknown, skip asset checks
+    if install_mode != "starter":
+        return failures
+    
+    # In starter mode, verify profile-templates exist
+    plugin_root = Path(__file__).parent
+    starter_kit_dir = plugin_root / "starter-kit"
+    
+    if not starter_kit_dir.exists():
+        failures.append("starter-kit-assets: starter-kit directory missing")
+        return failures
+    
+    profile_templates_dir = starter_kit_dir / "profile-templates"
+    if not profile_templates_dir.exists():
+        failures.append("starter-kit-assets: profile-templates directory missing")
+        return failures
+    
+    # Check for all 4 role templates
+    expected_roles = ["planner", "executor", "reviewer", "verifier"]
+    for role in expected_roles:
+        role_dir = profile_templates_dir / role
+        if not role_dir.exists():
+            failures.append(f"starter-kit-assets: missing profile template for role '{role}'")
+        else:
+            # Check for metadata file
+            metadata_file = role_dir / "metadata.yaml"
+            if not metadata_file.exists():
+                failures.append(f"starter-kit-assets: missing metadata.yaml for role '{role}'")
+            else:
+                # Validate metadata structure
+                try:
+                    import yaml
+                    metadata = yaml.safe_load(metadata_file.read_text())
+                    if not isinstance(metadata, dict):
+                        failures.append(f"starter-kit-assets: malformed metadata.yaml for role '{role}' (not a dict)")
+                    elif "role" not in metadata:
+                        failures.append(f"starter-kit-assets: missing 'role' field in metadata.yaml for '{role}'")
+                except Exception as e:
+                    failures.append(f"starter-kit-assets: error reading metadata.yaml for role '{role}': {e}")
+    
+    return failures
+
+
+def _check_install_mode() -> list[str]:
+    """Report install mode (minimal vs starter)."""
+    failures = []
+    from agentic_fieldbook.plugin import get_install_mode
+    
+    install_mode = get_install_mode()
+    
+    # This check is informational, not a failure
+    # The doctor output will show the mode
+    return failures
+
+
 def _doctor_failures(root: Path) -> list[str]:
     failures = []
     failures += _check_skill_loadability(root)
@@ -551,6 +630,10 @@ def _doctor_failures(root: Path) -> list[str]:
     failures += _check_calibration(root)
     failures += _check_cross_skill_names(root)
     failures += _check_cli_registration()
+    # T08: Add new v0.2 doctor checks
+    failures += _check_lane_binding_file()
+    failures += _check_starter_kit_assets()
+    failures += _check_install_mode()
     return failures
 
 
@@ -558,6 +641,31 @@ def _cmd_doctor(args: Any) -> int:
     root = _plugin_root(args)
     failures = _doctor_failures(root)
     print(f"Agentic Fieldbook v{_bundle_version(root)} doctor")
+    
+    # Report install mode (T08)
+    from agentic_fieldbook.plugin import get_install_mode
+    install_mode = get_install_mode()
+    if install_mode:
+        print(f"Install mode: {install_mode}")
+    else:
+        print("Install mode: not detected (v0.1 or fresh install)")
+    
+    # Report lane-binding status (T08)
+    from agentic_fieldbook.config import validate_binding_file
+    binding_status = validate_binding_file()
+    if binding_status["status"] == "ok":
+        bound = binding_status["details"]["bound_roles"]
+        unbound = binding_status["details"]["unbound_roles"]
+        print(f"Lane bindings: {len(bound)} bound, {len(unbound)} unbound")
+        if bound:
+            print(f"  Bound roles: {', '.join(bound)}")
+        if unbound:
+            print(f"  Unbound roles: {', '.join(unbound)}")
+    elif binding_status["status"] == "warning":
+        print(f"Lane bindings: not configured (run 'hermes aos map-lanes')")
+    else:
+        print(f"Lane bindings: ERROR - {binding_status['message']}")
+    
     if failures:
         print(f"FAIL: {len(failures)} named check(s) failed")
         for failure in failures: print(f"- {failure}")
