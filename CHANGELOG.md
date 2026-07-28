@@ -5,6 +5,23 @@ All notable changes to Agentic Fieldbook are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-07-28
+
+### Added
+
+- `aos preflight --profile <name>` validates Fieldbook skills are installed on a target profile before dispatching kanban cards with forced skills (#31)
+- `aos contract --workspace <path>` discovers the correct test-runner command for a workspace, detecting venv-in-worktree, venv-in-parent (git worktree common dir), uv, tox, and pyproject (#33)
+- Profile scoping and worktree environment guidance in SETUP.md
+
+### Changed
+
+- `aos setup` is now profile-aware: gateway restart guidance only appears when the target profile actually has a gateway configured, preventing env-var bleed false positives on non-gateway profiles (#32)
+
+### Testing
+
+- 152 tests (35 new across preflight, profile-aware gateway detection, and contract runner discovery)
+- CI on Python 3.11 and 3.13
+
 ## [0.1.1] - 2026-07-27
 
 ### Added

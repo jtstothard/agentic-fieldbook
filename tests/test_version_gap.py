@@ -69,7 +69,7 @@ class TestPluginState:
 
     def test_save_and_load_state(self):
         """Save should persist state and load should retrieve it."""
-        test_state = {"version_decisions": {"0.2.0": "skipped", "0.1.5": "applied"}}
+        test_state = {"version_decisions": {"0.3.0": "skipped", "0.1.5": "applied"}}
         _save_plugin_state(test_state)
         loaded = _load_plugin_state()
         assert loaded == test_state
@@ -88,10 +88,10 @@ class TestGitHubVersionFetch:
 
     def test_get_latest_github_version_success(self):
         """Should fetch and parse version from GitHub releases."""
-        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.2.0"}')):
+        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.3.0"}')):
             success, version = _get_latest_github_version()
             assert success is True
-            assert version == "0.2.0"
+            assert version == "0.3.0"
 
     def test_get_latest_github_version_without_v_prefix(self):
         """Should handle tags without 'v' prefix."""
@@ -130,12 +130,12 @@ class TestVersionGapDetection:
 
     def test_gap_detected_prompts_user(self, capsys):
         """Should prompt user when version gap exists."""
-        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.2.0"}')):
+        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.3.0"}')):
             with patch("sys.stdin.isatty", return_value=True):
                 with patch("builtins.input", return_value="n"):
                     _check_and_prompt_version_update()
                     captured = capsys.readouterr()
-                    assert "Update available: Agentic Fieldbook v0.2.0" in captured.out
+                    assert "Update available: Agentic Fieldbook v0.3.0" in captured.out
                     assert "Your choices:" in captured.out
                     assert "[y] Apply update" in captured.out
                     assert "[s] Skip this version" in captured.out
@@ -143,7 +143,7 @@ class TestVersionGapDetection:
 
     def test_non_interactive_mode_skips_prompt(self):
         """Should skip prompt in non-interactive mode."""
-        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.2.0"}')):
+        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.3.0"}')):
             with patch("sys.stdin.isatty", return_value=False):
                 with patch("builtins.input") as mock_input:
                     _check_and_prompt_version_update()
@@ -155,39 +155,39 @@ class TestUpdateChoices:
 
     def test_apply_choice_saves_decision(self, capsys):
         """Choice 'y' should save 'applied' decision."""
-        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.2.0"}')):
+        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.3.0"}')):
             with patch("sys.stdin.isatty", return_value=True):
                 with patch("builtins.input", return_value="y"):
                     _check_and_prompt_version_update()
                     
                     state = _load_plugin_state()
-                    assert state["version_decisions"]["0.2.0"] == "applied"
+                    assert state["version_decisions"]["0.3.0"] == "applied"
                     
                     captured = capsys.readouterr()
                     assert "pip install --upgrade" in captured.out
 
     def test_skip_choice_saves_decision(self, capsys):
         """Choice 's' should save 'skipped' decision."""
-        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.2.0"}')):
+        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.3.0"}')):
             with patch("sys.stdin.isatty", return_value=True):
                 with patch("builtins.input", return_value="s"):
                     _check_and_prompt_version_update()
                     
                     state = _load_plugin_state()
-                    assert state["version_decisions"]["0.2.0"] == "skipped"
+                    assert state["version_decisions"]["0.3.0"] == "skipped"
                     
                     captured = capsys.readouterr()
-                    assert "Skipped v0.2.0" in captured.out
+                    assert "Skipped v0.3.0" in captured.out
 
     def test_remind_choice_saves_decision(self, capsys):
         """Choice 'n' should save 'remind_later' decision."""
-        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.2.0"}')):
+        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.3.0"}')):
             with patch("sys.stdin.isatty", return_value=True):
                 with patch("builtins.input", return_value="n"):
                     _check_and_prompt_version_update()
                     
                     state = _load_plugin_state()
-                    assert state["version_decisions"]["0.2.0"] == "remind_later"
+                    assert state["version_decisions"]["0.3.0"] == "remind_later"
                     
                     captured = capsys.readouterr()
                     assert "Reminder set" in captured.out
@@ -198,7 +198,7 @@ class TestDecisionPersistence:
 
     def test_skipped_version_does_not_reprompt(self):
         """A skipped version should not prompt again."""
-        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.2.0"}')):
+        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.3.0"}')):
             with patch("sys.stdin.isatty", return_value=True):
                 # First run: skip
                 with patch("builtins.input", return_value="s"):
@@ -212,7 +212,7 @@ class TestDecisionPersistence:
 
     def test_remind_later_version_does_not_reprompt(self):
         """A remind_later version should not prompt again."""
-        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.2.0"}')):
+        with patch("urllib.request.urlopen", return_value=MockContextManager(b'{"tag_name": "v0.3.0"}')):
             with patch("sys.stdin.isatty", return_value=True):
                 # First run: remind later
                 with patch("builtins.input", return_value="n"):
@@ -229,8 +229,8 @@ class TestNewerVersionRePrompt:
     """Test that a newer version prompts again even after skipping an old version."""
 
     def test_newer_version_prompts_after_skip(self, capsys):
-        """After skipping v0.2.0, v0.3.0 should still prompt."""
-        # Save a decision for v0.2.0
+        """After skipping v0.3.0, v0.3.0 should still prompt."""
+        # Save a decision for v0.3.0
         _save_plugin_state({"version_decisions": {"0.2.0": "skipped"}})
         
         # Fetch returns v0.3.0
