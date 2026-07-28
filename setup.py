@@ -25,10 +25,14 @@ setup(
         "Operating System :: OS Independent",
     ],
     python_requires=">=3.9",
+    install_requires=[
+        "pydantic>=2.0",
+        "PyYAML>=6.0",
+    ],
     # Hermes will load plugin.py during plugin initialization
     entry_points={
         "hermes_agent.plugins": [
-            "agentic-fieldbook = agentic_fieldbook.plugin:register",
+            "agentic-fieldbook = agentic_fieldbook.plugin",
         ],
     },
 )

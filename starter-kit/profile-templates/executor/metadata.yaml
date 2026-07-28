@@ -1,0 +1,15 @@
+role: executor
+description: Profile for AOS executor role - executes tasks
+required_skills:
+  - task-execution
+  - code-implementation
+  - testing
+profile_settings:
+  model: claude-sonnet-4
+  provider: anthropic
+  enabled_toolsets:
+    - web
+    - file
+    - terminal
+  max_tokens: 200000
+  temperature: 0.2

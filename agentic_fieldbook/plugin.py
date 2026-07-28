@@ -100,6 +100,18 @@ def _register_aos_cli(subparsers: Any) -> None:
         help="Set up Agentic Fieldbook",
     )
     setup_parser.add_argument("--yes", action="store_true", help="accept SOUL.md changes")
+    # T07: Install mode flags (mutually exclusive)
+    install_mode_group = setup_parser.add_mutually_exclusive_group()
+    install_mode_group.add_argument(
+        "--minimal",
+        action="store_true",
+        help="Install v0.1-equivalent (no starter-kit templates or first-pilot flow)",
+    )
+    install_mode_group.add_argument(
+        "--starter",
+        action="store_true",
+        help="Install v0.2.0 starter-kit (includes templates and first-pilot flow)",
+    )
 
     # doctor subcommand (stub)
     aos_subparsers.add_parser(
@@ -139,6 +151,23 @@ def _register_aos_cli(subparsers: Any) -> None:
         help="Path to the workspace to inspect",
     )
 
+    # map-lanes subcommand
+    map_lanes_parser = aos_subparsers.add_parser(
+        "map-lanes",
+        help="Profile mapping wizard for AOS lanes (T02-T03)",
+    )
+    map_lanes_parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Run interactive wizard (default in T03)",
+    )
+
+    # first-pilot subcommand (T06)
+    aos_subparsers.add_parser(
+        "first-pilot",
+        help="Guided first-pilot flow for calibration (T06)",
+    )
+
 
 def _handle_aos_command(args: Any) -> int:
     """Handle 'hermes aos' subcommand execution.
@@ -160,6 +189,10 @@ def _handle_aos_command(args: Any) -> int:
         return _cmd_preflight(args)
     elif subcommand == "contract":
         return _cmd_contract(args)
+    elif subcommand == "map-lanes":
+        return _cmd_map_lanes(args)
+    elif subcommand == "first-pilot":
+        return _cmd_first_pilot(args)
     else:
         print(f"Unknown aos subcommand: {subcommand}")
         return 1
@@ -192,7 +225,57 @@ def _cmd_setup(args: Any) -> int:
 
     print(f"Agentic Fieldbook v{PLUGIN_VERSION} setup")
     print(f"Compatible with Hermes {HERMES_COMPATIBILITY['min']}–{HERMES_COMPATIBILITY['max']}")
-    soul = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
+    
+    # T07: Determine install mode
+    minimal = getattr(args, "minimal", False)
+    starter = getattr(args, "starter", False)
+    
+    # Validate mutual exclusion
+    if minimal and starter:
+        print("ERROR: Cannot specify both --minimal and --starter", file=sys.stderr)
+        return 1
+    
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    
+    # Determine install mode
+    install_mode = None
+    if minimal:
+        install_mode = "minimal"
+    elif starter:
+        install_mode = "starter"
+    else:
+        # No explicit mode - check if this is a v0.1 upgrade
+        if _is_v01_upgrade(hermes_home):
+            install_mode = "minimal"
+            print()
+            print("⚠️  Detected v0.1 installation.")
+            print("Installing in minimal mode (v0.1-equivalent).")
+            print("To add the v0.2.0 starter-kit later, run:")
+            print("  hermes aos setup --starter")
+        else:
+            # Fresh install - default to minimal
+            install_mode = "minimal"
+            print()
+            print("Installing in minimal mode.")
+            print("To install the v0.2.0 starter-kit, run:")
+            print("  hermes aos setup --starter")
+    
+    # Persist install mode
+    _save_install_mode(install_mode, hermes_home)
+    
+    if install_mode == "minimal":
+        print()
+        print("Minimal mode: v0.1-equivalent installation.")
+        print("Starter-kit templates and first-pilot flow not installed.")
+    else:
+        print()
+        print("Starter mode: v0.2.0 starter-kit installation.")
+        print("Includes profile templates and first-pilot flow.")
+    
+    print()
+    
+    # Continue with SOUL.md setup
+    soul = hermes_home / "SOUL.md"
     begin, end = "<!-- aos:begin -->", "<!-- aos:end -->"
     existing = soul.read_text(encoding="utf-8") if soul.exists() else ""
     if begin in existing and end in existing:
@@ -231,6 +314,7 @@ def _cmd_setup(args: Any) -> int:
             # Non-gateway profile (CLI/worker/TUI)
             print()
             print("Setup complete. The plugin is active for the next CLI/worker invocation.")
+            print("Next step: run 'hermes aos map-lanes' to bind profiles to AOS roles")
     return doctor_result
 
 
@@ -354,6 +438,54 @@ def _gateway_is_running() -> bool:
     return any(indicator in os.environ for indicator in gateway_indicators)
 
 
+def _plugin_state_dir() -> Path:
+    """Return the plugin state directory in HERMES_HOME."""
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    state_dir = hermes_home / "plugins" / PLUGIN_NAME
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir
+
+
+def get_install_mode(hermes_home: Path | None = None) -> str | None:
+    """Read the install mode from the marker file.
+
+    Returns "minimal", "starter", or None if not found.
+    """
+    if hermes_home is None:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    
+    marker_file = hermes_home / "plugins" / PLUGIN_NAME / "install-mode.txt"
+    if not marker_file.exists():
+        return None
+    
+    try:
+        content = marker_file.read_text(encoding="utf-8").strip()
+        return content
+    except OSError:
+        return None
+
+
+def _save_install_mode(mode: str, hermes_home: Path | None = None) -> None:
+    """Save the install mode to the marker file."""
+    if hermes_home is None:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    
+    state_dir = hermes_home / "plugins" / PLUGIN_NAME
+    state_dir.mkdir(parents=True, exist_ok=True)
+    
+    marker_file = state_dir / "install-mode.txt"
+    marker_file.write_text(mode, encoding="utf-8")
+
+
+def _is_v01_upgrade(hermes_home: Path) -> bool:
+    """Check if this appears to be a v0.1 installation (no marker file but SOUL.md exists)."""
+    marker_file = hermes_home / "plugins" / PLUGIN_NAME / "install-mode.txt"
+    soul_path = hermes_home / "SOUL.md"
+    
+    return (not marker_file.exists() and soul_path.exists() and 
+            "<!-- aos:begin -->" in soul_path.read_text(encoding="utf-8"))
+
+
 def _cmd_doctor(args: Any) -> int:
     """Doctor command - delegates to the real implementation from the root entrypoint.
 
@@ -411,6 +543,35 @@ def _cmd_contract(args: Any) -> int:
         print("ERROR: --workspace is required", file=sys.stderr)
         return 1
     return check_contract(workspace)
+
+
+def _cmd_map_lanes(args: Any) -> int:
+    """Run the profile-mapping wizard when explicitly requested."""
+    # The no-argument path remains a non-interactive compatibility stub;
+    # --interactive runs the T03 wizard.
+    interactive = getattr(args, "interactive", False)
+
+    if interactive:
+        try:
+            from .wizard import run_wizard
+            return run_wizard()
+        except ImportError:
+            print("ERROR: wizard module not available", file=sys.stderr)
+            return 1
+    else:
+        print("Profile mapping wizard is available via --interactive; the coming-soon stub remains non-interactive.")
+        print("Lane bindings are persisted in the AOS configuration file.")
+        return 0
+
+
+def _cmd_first_pilot(args: Any) -> int:
+    """Run the guided first-pilot flow for calibration data collection (T06)."""
+    try:
+        from .first_pilot import run_first_pilot_flow
+        return run_first_pilot_flow(interactive=True)
+    except ImportError:
+        print("ERROR: first_pilot module not available", file=sys.stderr)
+        return 1
 
 
 # Metadata for plugin discovery (not used by Hermes plugin loader but useful for tooling)

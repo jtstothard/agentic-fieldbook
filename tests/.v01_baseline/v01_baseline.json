@@ -1,0 +1,181 @@
+{
+  "version": "0.1.0",
+  "metadata": {
+    "VERSION": {
+      "hash": "6ad9613a455798d6d92e5f5f390ab4baa70596bc869ed6b17f5cdd2b28635f06",
+      "size": 5
+    },
+    "plugin.yaml": {
+      "hash": "85c63ab460434a92d2558f8d0733d9bf16d284cfd022033b851ab480dbf833a9",
+      "size": 378
+    },
+    "setup.py": {
+      "hash": "7ff6408833f608505659b6d775c6d38aea6cd8784e03c7baa1814b348eef5d5d",
+      "size": 1130
+    }
+  },
+  "skills": {
+    "contract-schema": {
+      "skill_md_hash": "30f5c54ff92641e5644b2cfd26a25eb6a5093d929e405eed70c003cd397f1386",
+      "references": {
+        "contract-core.v1.yaml": {
+          "hash": "f6aae9733a792af31a37ff9a94700d5e87584f7965d850267157cec1b7b31a46",
+          "size": 4773
+        },
+        "contract-template.md": {
+          "hash": "927614fcfb19d7ffc327a06217ae7af40783465163a1056994cbb675ab71d8ad",
+          "size": 3217
+        },
+        "domain-automation.v1.yaml": {
+          "hash": "2685e932d52698c0b7e29966a262313a2f1895d9747f37a39119ea5a54e6517a",
+          "size": 952
+        },
+        "domain-coding.v1.yaml": {
+          "hash": "e023bbdff7f6e32589405bf4e6eccc34653fa755a2f85177cebacb1c158218a6",
+          "size": 938
+        },
+        "domain-ops.v1.yaml": {
+          "hash": "26ad242465cab35c1d7ab442cac0901717121d57bf808432d190f4303d106a4b",
+          "size": 914
+        },
+        "domain-research.v1.yaml": {
+          "hash": "5b9d90e881beaf0d8d204197e36f179fbf1d0316e552123bd98ec22bae1be5f5",
+          "size": 963
+        },
+        "example-contract-coding.yaml": {
+          "hash": "eeff0cb9ced28e53b5a32fad5ac142d8aa2592799fe4a3e94ca171b6b2b1bd5f",
+          "size": 3934
+        },
+        "lifecycle-state-machine.md": {
+          "hash": "4ec2503e1b6b3838e25a180970bf464934141c2049bedfc4008ea98d1a7c9e2a",
+          "size": 3137
+        },
+        "stage-output-envelope.yaml": {
+          "hash": "585f9ff1610b5fe59dc6e0387919f46f902912f9b08ed87b3891323a670c1b47",
+          "size": 3071
+        },
+        "versioning-rules.md": {
+          "hash": "a166440df2513419603fb58bb0631bb18ad28cea9f71282d3a9dcd7bd4f7b8f7",
+          "size": 1977
+        }
+      },
+      "templates": {}
+    },
+    "knowledge-lifecycle": {
+      "skill_md_hash": "b1b70ef70d182536a5fd4a43bc7e7f4411f9bba9e05854b5b6df54c7376abc40",
+      "references": {
+        "knowledge-artifact-template.yaml": {
+          "hash": "7b1a813b54ccc41c279df0df6fe569e88fde9604aa94dd3ce11d4035158c27f9",
+          "size": 2454
+        }
+      },
+      "templates": {}
+    },
+    "lane-calibration": {
+      "skill_md_hash": "ac0912a5480362d38012cc3dede9b68e15209e81673feb2d940d0c18908746d2",
+      "references": {
+        "calibration-example.yaml": {
+          "hash": "79518359555ffda96f80e1b299d4217efc0dda23ce0e57bdcca49f6d87b2c9e1",
+          "size": 3241
+        },
+        "calibration-schema.yaml": {
+          "hash": "b5c7cd4b156cd7f92adf2fb1e003e3cfd3977078c9c3db519169b335fb536823",
+          "size": 3676
+        },
+        "calibration-template.yaml": {
+          "hash": "d06036c7e48362c77437eb1d67aeb98409bdc159360bb85e4d6ff69f488436db",
+          "size": 1333
+        },
+        "recalibration-triggers.md": {
+          "hash": "58a573e0d8afc0d53f17a11025a4bfa102a016296de7e8d1c87271bc6aa19110",
+          "size": 4366
+        }
+      },
+      "templates": {}
+    },
+    "planning-routing": {
+      "skill_md_hash": "53b2721ce3897329a53567f8248d7706bc9c3d3ca7cd9ea4a4bbb4cde6a03a17",
+      "references": {},
+      "templates": {}
+    },
+    "review-calibration": {
+      "skill_md_hash": "cc3ae7586d1c02b321ebbbf3e54308cccb81d6d7919997bb335b7b91c03bd428",
+      "references": {
+        "scoring-template.md": {
+          "hash": "af75f9ea34333dd25bfa252a239515256a833fefad11b7a7d950134b79f67766",
+          "size": 5401
+        },
+        "severity-rubric.md": {
+          "hash": "851cb786cc7c665eb5f7592b860ed865a392ac4d664fbb319b992cd1178ef793",
+          "size": 5403
+        }
+      },
+      "templates": {
+        "review-dispatch.md": {
+          "hash": "f3c0dcd3180ba707670e8a5506d11f0e171840cc7476625aabfcb113dad477c5",
+          "size": 3269
+        }
+      }
+    },
+    "risk-taxonomy": {
+      "skill_md_hash": "71da8721f2ddff0b7c2cb5d4906b86286d9fa0a6c0565d72a6f09712f49f0e43",
+      "references": {
+        "risk-assessment-template.yaml": {
+          "hash": "ceb865047aa7f94754ede902d8285f3e7aa0af723db2760841d271b72a44ae8b",
+          "size": 2207
+        }
+      },
+      "templates": {}
+    },
+    "stage-handoff": {
+      "skill_md_hash": "832c8ba0b6f21f6c91423cdd7b994e259fecf95a3aedeb1862a516f6c5237954",
+      "references": {
+        "example-executor-to-reviewer.yaml": {
+          "hash": "b36dd2401b3d01b95b0f8147c7b83567330fd8be0799bcad9cd7202bbf92f824",
+          "size": 2073
+        },
+        "example-planner-to-executor.yaml": {
+          "hash": "09f054c5fa04d1e54c5384725d18036b9a8ce24e352de5f809bbc6398a671b8a",
+          "size": 2212
+        },
+        "stage-handoff-schema.yaml": {
+          "hash": "71ae04e0fdf15cca1c39ebdf585d7742a9fe5fba99eef9b00ab2c21a7b6ccb2d",
+          "size": 2081
+        }
+      },
+      "templates": {}
+    }
+  },
+  "commands": {
+    "setup": {
+      "return_code": 0,
+      "stdout": "Agentic Fieldbook v0.1.0 setup\nCompatible with Hermes 0.18.0\u20130.20.0\nInserted managed instructions into /tmp/tmpc36ekmjz/SOUL.md\nRunning doctor...\n",
+      "stderr": ""
+    },
+    "doctor": {
+      "return_code": 0,
+      "stdout": "Agentic Fieldbook v0.1.0 doctor \u2014 stub\nFull doctor verification will be added in later tickets.\nThis stub proves command registration; real checks coming soon.\n",
+      "stderr": ""
+    },
+    "version": {
+      "return_code": 0,
+      "stdout": "Agentic Fieldbook v0.1.0\nHermes compatibility: 0.18.0\u20130.20.0\n",
+      "stderr": ""
+    },
+    "migrate": {
+      "return_code": 0,
+      "stdout": "Agentic Fieldbook v0.1.0 migrate: no changes needed\n",
+      "stderr": ""
+    }
+  },
+  "plugin_info": {
+    "name": "agentic-fieldbook",
+    "version": "0.1.0",
+    "description": "An operating methodology for autonomous agents \u2014 plugin bundle",
+    "hermes_compatibility": {
+      "min": "0.18.0",
+      "max": "0.20.0"
+    },
+    "homepage": "https://github.com/jtstothard/agentic-fieldbook"
+  }
+}

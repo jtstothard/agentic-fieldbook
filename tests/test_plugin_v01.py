@@ -270,8 +270,8 @@ class TestPluginMetadata:
 
         _register_aos_cli(mock_subparsers)
 
-        # Verify six subcommands were added (setup, doctor, version, migrate, preflight, contract)
-        assert mock_aos_subparsers.add_parser.call_count == 6
+        # Verify seven subcommands were added (setup, doctor, version, migrate, preflight, contract, map-lanes)
+        assert mock_aos_subparsers.add_parser.call_count == 8
 
         # Verify subcommand names
         call_args = [call[0][0] for call in mock_aos_subparsers.add_parser.call_args_list]

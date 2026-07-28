@@ -54,11 +54,12 @@ class TestRootEntrypointParity:
     """Root entrypoint must register exactly the same commands as the package."""
 
     def test_root_registers_all_six_commands(self):
-        """Root __init__.py must register setup, doctor, version, migrate, preflight, contract."""
+        """Root __init__.py must register setup, doctor, version, migrate, preflight, contract, map-lanes."""
         root_mod = load_root_init()
         root_commands = extract_commands(root_mod)
 
-        expected = {"setup", "doctor", "version", "migrate", "preflight", "contract"}
+        # v0.2 adds map-lanes (T01) and first-pilot (T06) commands
+        expected = {"setup", "doctor", "version", "migrate", "preflight", "contract", "map-lanes", "first-pilot"}
         actual = set(root_commands)
 
         assert actual == expected, (

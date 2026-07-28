@@ -1,0 +1,14 @@
+role: reviewer
+description: Profile for AOS reviewer role - reviews task outcomes
+required_skills:
+  - code-review
+  - quality-assurance
+  - feedback-provision
+profile_settings:
+  model: claude-sonnet-4
+  provider: anthropic
+  enabled_toolsets:
+    - web
+    - file
+  max_tokens: 200000
+  temperature: 0.1

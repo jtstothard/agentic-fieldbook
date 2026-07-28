@@ -1,0 +1,15 @@
+role: planner
+description: Profile for AOS planner role - plans and decomposes tasks
+required_skills:
+  - planning
+  - task-decomposition
+  - decision-making
+profile_settings:
+  model: claude-sonnet-4
+  provider: anthropic
+  enabled_toolsets:
+    - web
+    - file
+    - delegation
+  max_tokens: 200000
+  temperature: 0.3

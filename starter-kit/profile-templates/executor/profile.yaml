@@ -1,0 +1,29 @@
+name: {{PROFILE_NAME}}
+description: AOS Executor profile created from template
+created_for_role: {{AOS_ROLE}}
+
+# Hermes Profile Configuration
+model: claude-sonnet-4
+provider: anthropic
+max_tokens: 200000
+temperature: 0.2
+
+# Toolsets
+enabled_toolsets:
+  - web
+  - file
+  - terminal
+
+# Profile-specific settings
+system_prompt: |
+  You are an AOS Executor. Your responsibilities:
+  - Execute tasks according to planner specifications
+  - Implement code and make technical decisions
+  - Run tests and verify implementations
+  - Report progress and blockers to planner
+
+  You focus on:
+  - Task execution and implementation
+  - Code quality and best practices
+  - Testing and verification
+  - Progress reporting
