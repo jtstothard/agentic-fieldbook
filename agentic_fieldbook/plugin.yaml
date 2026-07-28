@@ -1,5 +1,5 @@
 name: agentic-fieldbook
-version: 0.1.1
+version: 0.2.2
 description: "Agentic Fieldbook — An operating methodology for autonomous agents. Provides userland commands for setup, doctor, and versioned bundle management. Stub implementations in v0.1; full runtime verification and calibration artifacts are deferred to later tickets."
 author: "Jay Stothard <jtstothard@gmail.com>"
 kind: standalone
