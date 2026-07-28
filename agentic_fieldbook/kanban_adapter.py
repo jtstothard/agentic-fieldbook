@@ -135,5 +135,7 @@ class KanbanAdapter:
         return report
 
     def handle_failure(self, task_id: str, reason: str) -> dict[str, str]:
-        self._run("kanban", "block", task_id, "--kind", "transient", *reason.split())
+        # Pass the reason as one CLI argument for compatibility with Hermes
+        # versions whose parser treats the positional reason as a single value.
+        self._run("kanban", "block", task_id, "--kind", "transient", reason)
         return {"operation": "handle_failure", "task_id": task_id, "reason": reason}
