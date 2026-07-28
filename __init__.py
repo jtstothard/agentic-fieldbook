@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Hermes loads this file as hermes_plugins.agentic_fieldbook via
+# importlib.util.spec_from_file_location, which does NOT add the plugin
+# directory to sys.path. Without this, `from agentic_fieldbook.plugin import`
+# raises ModuleNotFoundError on Git installs. See issue #43.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 PLUGIN_NAME = "agentic-fieldbook"
 _VERSION_FILE = Path(__file__).with_name("VERSION")
 PLUGIN_VERSION = _VERSION_FILE.read_text(encoding="utf-8").strip()
