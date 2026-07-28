@@ -74,6 +74,40 @@ def _cmd_contract(args: Any) -> int:
     return package_contract(args)
 
 
+def _print_gateway_guidance(profile: str | None, doctor_result: int) -> None:
+    """Print profile-aware gateway guidance after setup.
+
+    This consolidates the gateway messaging logic into a single function
+    to prevent regressions where guidance is added in one entrypoint but not
+    the other (issue #46, 3rd recurrence of #32 → #40 → #46).
+
+    Args:
+        profile: The Hermes profile name (or None for default)
+        doctor_result: Exit code from _cmd_doctor (0 = success)
+
+    Only prints gateway action messages for gateway profiles; prints
+    CLI/worker completion message for non-gateway profiles.
+    """
+    if doctor_result != 0:
+        return
+
+    if _profile_has_gateway(profile):
+        # Gateway profile
+        if _gateway_is_running_for_profile(profile):
+            print()
+            print("Restart the gateway for the plugin to take effect:")
+            print("  hermes gateway restart")
+        else:
+            print()
+            print("Start the gateway for the plugin to take effect:")
+            print("  hermes gateway start")
+    else:
+        # Non-gateway profile (CLI/worker/TUI)
+        print()
+        print("Setup complete. The plugin is active for the next CLI/worker invocation.")
+        print("Next step: run 'hermes aos map-lanes' to bind profiles to AOS roles")
+
+
 def _cmd_setup(args: Any) -> int:
     is_compatible, error_msg = _check_hermes_version()
     if not is_compatible:
@@ -123,23 +157,9 @@ def _cmd_setup(args: Any) -> int:
     print("Running doctor...")
     doctor_result = _cmd_doctor(args)
 
-    # Profile-aware gateway messaging
+    # Profile-aware gateway messaging (consolidated in shared function)
     profile = _get_hermes_profile()
-    if doctor_result == 0:
-        if _profile_has_gateway(profile):
-            # Gateway profile
-            if _gateway_is_running_for_profile(profile):
-                print()
-                print("Restart the gateway for the plugin to take effect:")
-                print("  hermes gateway restart")
-            else:
-                print()
-                print("Start the gateway for the plugin to take effect:")
-                print("  hermes gateway start")
-        else:
-            # Non-gateway profile (CLI/worker/TUI)
-            print()
-            print("Setup complete. The plugin is active for the next CLI/worker invocation.")
+    _print_gateway_guidance(profile, doctor_result)
     return doctor_result
 
 
