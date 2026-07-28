@@ -119,17 +119,25 @@ class TestRootProfileAwareGateway:
         root_mod = load_root_init()
 
         # Check that _cmd_setup source uses the profile-aware helpers
+        # After consolidation, it calls _print_gateway_guidance which internally
+        # uses _profile_has_gateway and _gateway_is_running_for_profile
         import inspect
         setup_source = inspect.getsource(root_mod._cmd_setup)
 
         assert "_get_hermes_profile()" in setup_source, (
             "Root _cmd_setup must call _get_hermes_profile()"
         )
-        assert "_profile_has_gateway(" in setup_source, (
-            "Root _cmd_setup must call _profile_has_gateway()"
+        assert "_print_gateway_guidance(" in setup_source, (
+            "Root _cmd_setup must call _print_gateway_guidance() for consolidated messaging"
         )
-        assert "_gateway_is_running_for_profile(" in setup_source, (
-            "Root _cmd_setup must call _gateway_is_running_for_profile()"
+
+        # Verify _print_gateway_guidance contains the profile-aware logic
+        guidance_source = inspect.getsource(root_mod._print_gateway_guidance)
+        assert "_profile_has_gateway(" in guidance_source, (
+            "_print_gateway_guidance must call _profile_has_gateway()"
+        )
+        assert "_gateway_is_running_for_profile(" in guidance_source, (
+            "_print_gateway_guidance must call _gateway_is_running_for_profile()"
         )
 
         # Verify it does NOT call the old env-var-only _gateway_is_running()
