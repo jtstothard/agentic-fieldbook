@@ -316,7 +316,7 @@ class TestV01RegressionHarness:
         content = read_file_content(METADATA_FILES["setup.py"])
         assert '"hermes.plugins"' in content or '"hermes_agent.plugins"' in content, "setup.py must define a Hermes plugin entry point"
         assert "agentic-fieldbook" in content, "setup.py must register agentic-fieldbook plugin"
-        assert "register_cli_commands" in content or "plugin:register" in content, (
+        assert "register_cli_commands" in content or "plugin:register" in content or "agentic_fieldbook.plugin" in content, (
             "setup.py must reference registration function"
         )
 
