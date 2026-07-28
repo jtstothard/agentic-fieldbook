@@ -135,5 +135,5 @@ class KanbanAdapter:
         return report
 
     def handle_failure(self, task_id: str, reason: str) -> dict[str, str]:
-        self._run("kanban", "block", task_id, "--kind", "transient", reason)
+        self._run("kanban", "block", task_id, "--kind", "transient", *reason.split())
         return {"operation": "handle_failure", "task_id": task_id, "reason": reason}
