@@ -136,8 +136,11 @@ class TestProfileDiscovery:
         """discover_profiles should return a list of profile names."""
         try:
             from agentic_fieldbook.wizard import discover_profiles
-            # Mock file system to return test profiles
-            profiles = discover_profiles()
+            # This contract exercises the default home, not a HERMES_HOME
+            # left behind by an earlier environment-sensitive test.
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("HERMES_HOME", None)
+                profiles = discover_profiles()
             assert isinstance(profiles, list)
         except (ImportError, AttributeError):
             pytest.skip("wizard module not implemented yet (red phase)")
