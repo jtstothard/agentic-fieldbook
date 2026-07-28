@@ -49,3 +49,18 @@ The stage handoff is **contract-state**, not **conversation-state**. It carries 
 ## Relationship to the contract
 
 The stage handoff references the contract by ID and revision. The contract defines *what* the task is; the stage handoff defines *where the work is right now* and *what the next role must do*.
+
+## Budget-exhaustion handoff
+
+When a worker exhausts its iteration budget during delivery or near completion, the final handoff must include explicit workspace state so the router can recover without manual inspection:
+
+**Required fields for budget-exhaustion handoff:**
+
+- `work_state.snapshot`: Git status (staged, unstaged, untracked files)
+- `work_state.commits_pending`: List of commits made but not pushed, if any
+- `work_state.artifacts_partial`: List of partially-created artifacts (PR drafts, test results, logs)
+- `work_state.delivery_blocked`: Why delivery could not complete (budget exhausted, auth failure, etc.)
+
+**Recovery pattern:**
+
+The router reads the snapshot, recovers the staged worktree if needed, and completes the delivery mechanics on behalf of the exhausted worker. The worker does not declare `blocked` — it declares `completion_attempted` with the snapshot attached.

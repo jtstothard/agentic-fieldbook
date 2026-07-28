@@ -102,6 +102,22 @@ Return to planning (do not improvise) when:
 
 **Minor mechanical corrections** within the approved envelope (typo fixes, path corrections, equivalent command swaps) are recorded but stay in the current plan. They do not trigger a full replan.
 
+## Budget management and delivery reservation
+
+Workers must reserve a final completion window for delivery mechanics before exhausting the iteration budget. Delivery mechanics include:
+
+- Checking workspace state (git status, staged changes, uncommitted work)
+- Committing and pushing changes
+- Creating or updating pull requests
+- Emitting stage output envelopes
+- Calling `kanban_complete` or structured handoff
+
+**Planning rule:** When setting iteration budgets for worker lanes, reserve the final 5-10% of the budget for delivery. This prevents the worker from reporting blocked when the core work is complete but the handoff is not.
+
+**Execution rule:** When 80-90% of the iteration budget is consumed and the core work is complete, stop new implementation and transition immediately to delivery mechanics. Do not start new subtasks.
+
+**Budget-exhaustion recovery:** If a worker exhausts its budget during delivery, it must snapshot the workspace state (git status, staged files, partial artifacts) and report this explicitly in the final handoff so the router can recover without manual inspection. Do not leave the workspace in an ambiguous state.
+
 ## Decomposition and parallelism
 
 Plans that decompose into parallel work must declare:
