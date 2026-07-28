@@ -79,6 +79,7 @@ limits:
   time: ""          # Overall time limit.
   cost: ""          # Overall cost limit.
   stages: ""        # Expected number of lifecycle stages.
+  iterations: ""    # Worker iteration budget (for goal-mode or turn-limited lanes).
 
 # --- Role Assignments ---
 roles:

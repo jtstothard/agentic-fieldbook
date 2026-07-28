@@ -97,6 +97,9 @@ This template shows how to render the structured contract (YAML/JSON) as human-r
 - Time: {{limits.time}}
 - Cost: {{limits.cost}}
 - Stages: {{limits.stages}}
+- Iterations: {{limits.iterations}}
+
+**Delivery reservation:** The final 5-10% of the iteration budget is reserved for delivery mechanics (git status, commit/push, PR creation, kanban_complete). Workers transition to delivery when 80-90% of budget is consumed and core work is complete.
 
 ## Roles
 
