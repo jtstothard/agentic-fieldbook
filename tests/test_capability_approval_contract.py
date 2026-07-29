@@ -62,7 +62,18 @@ def test_empty_target_is_rejected():
         "target": {},
         "approval_binding": {**VALID["approval_binding"], "target": {}},
     })
-    assert errors == ["target must be a non-empty mapping"]
+    assert errors == ["target must contain non-empty identity values"]
+
+
+def test_malformed_target_identity_values_are_rejected():
+    for member in ("", " ", None, True):
+        target = {"id": member}
+        errors = validate_capability_approval({
+            **VALID,
+            "target": target,
+            "approval_binding": {**VALID["approval_binding"], "target": target},
+        })
+        assert errors == ["target must contain non-empty identity values"]
 
 
 def test_digest_whitespace_is_rejected():

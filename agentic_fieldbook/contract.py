@@ -18,6 +18,22 @@ CAPABILITY_APPROVAL_REQUIRED_FIELDS = (
 )
 
 
+def _valid_target_identity(value: Any) -> bool:
+    """Accept only concrete, non-empty target identity values."""
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if type(value) is int:
+        return value >= 1
+    if isinstance(value, Mapping):
+        return bool(value) and all(
+            isinstance(key, str) and key.strip() and _valid_target_identity(member)
+            for key, member in value.items()
+        )
+    return False
+
+
 def validate_capability_approval(contract: Mapping[str, Any]) -> list[str]:
     """Return deterministic validation errors for a capability-approval contract.
 
@@ -43,9 +59,8 @@ def validate_capability_approval(contract: Mapping[str, Any]) -> list[str]:
                   "capability"):
         if field in contract and (not isinstance(contract[field], str) or not contract[field].strip()):
             errors.append(f"{field} must be a non-empty string")
-    if "target" in contract and (
-            not isinstance(contract["target"], Mapping) or not contract["target"]):
-        errors.append("target must be a non-empty mapping")
+    if "target" in contract and not _valid_target_identity(contract["target"]):
+        errors.append("target must contain non-empty identity values")
     digest = contract.get("contract_digest")
     if "contract_digest" in contract and (
             not isinstance(digest, str) or
