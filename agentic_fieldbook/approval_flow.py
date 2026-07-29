@@ -81,8 +81,9 @@ class NativeApprovalFlow:
         except Exception:
             return self._failed()
         audience = self.broker_audience
+        # Preserve the package's contract_digest: the broker verifies it against
+        # the complete contract projection before reserving replay/lease state.
         contract = _thaw(action_package.as_mapping())
-        contract.pop("contract_digest", None)
         try:
             return verify_approval_receipt(
                 receipt, contract, audience, requester_context.requester_ref,

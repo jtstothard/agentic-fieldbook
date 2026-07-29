@@ -15,6 +15,7 @@ from agentic_fieldbook.broker import (
     ACTION_MISMATCH, AUDIENCE_MISMATCH, VERIFICATION_FAILED, ApprovalStore, ApproverPolicy, Clock, KeyStore,
     ReservationOutcome, verify_approval_receipt,
 )
+from agentic_fieldbook.contract import canonical_contract_projection
 from agentic_fieldbook.receipt import canonical_digest, signed_payload
 import hashlib
 
@@ -109,16 +110,21 @@ def make_case():
                 "operation_limit": 1, "verification_method": "direct-query",
                 "rollback": {}, "abort_conditions": [],
                 "approval_expires_at": "2025-01-01T12:05:00Z"}
-    digest = canonical_digest(contract)
+    # Build package with placeholder digests first, then compute correctly
+    package = ActionPackage("placeholder", contract["target"], contract["capability"], contract["parameters"],
+                            300, 1, "direct-query", {}, [], "2025-01-01T12:05:00Z")
+    action_digest = package.digest()
+    contract_projection = canonical_contract_projection(package.as_mapping())
+    contract_digest = canonical_digest(contract_projection)
+    package = replace(package, contract_digest=contract_digest)
     receipt = {"receipt_version": "1", "approval_request_id": "req-1", "decision": "approved",
-               "action_digest": digest, "target": contract["target"], "capability": contract["capability"],
+               "action_digest": action_digest, "contract_digest": contract_digest,
+               "target": contract["target"], "capability": contract["capability"],
                "parameters": contract["parameters"], "issuer": "human-1",
                "issued_at": "2025-01-01T11:55:00Z", "valid_until": "2025-01-01T12:05:00Z",
                "audience": "broker-1", "receipt_id": "receipt-1", "nonce": "nonce-1",
                "signature": {"algorithm": "test", "key_id": "key-1", "value": ""}}
     receipt["signature"]["value"] = hashlib.sha256(signed_payload(receipt)).hexdigest()
-    package = ActionPackage(digest, contract["target"], contract["capability"], contract["parameters"],
-                            300, 1, "direct-query", {}, [], "2025-01-01T12:05:00Z")
     return contract, package, receipt
 
 
