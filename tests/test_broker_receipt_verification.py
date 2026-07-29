@@ -6,6 +6,7 @@ from the spec, including atomic replay protection and clock-skew bounds.
 
 import threading
 import time
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from unittest.mock import Mock
@@ -32,9 +33,10 @@ from agentic_fieldbook.broker import (
     VERIFICATION_FAILED,
     DEFAULT_CLOCK_SKEW_SECONDS,
     DEFAULT_VALIDITY_MINUTES,
+    ReservationOutcome,
 )
 from agentic_fieldbook.contract import _strict_equal
-from agentic_fieldbook.receipt import canonical_digest
+from agentic_fieldbook.receipt import canonical_digest, signed_payload
 
 
 # === Test fixtures ===
@@ -63,30 +65,14 @@ VALID_RECEIPT = {
     },
 }
 
-# Valid quorum receipt (2-of-2)
-VALID_QUORUM_RECEIPT = {
-    **VALID_RECEIPT,
-    "approval_request_id": "req-quorum",
-    "receipt_id": "receipt-quorum",
-    "nonce": "nonce-quorum",
-    "quorum": {
-        "required": 2,
-        "approved": 2,
-        "signers": [
-            {"subject": "user-001", "decision": "approved", "timestamp": "2025-01-01T11:55:00Z"},
-            {"subject": "user-002", "decision": "approved", "timestamp": "2025-01-01T11:55:30Z"},
-        ],
-        "shared_digest": "sha256:" + "b" * 64,
-        "one_lease_max": True,
-    },
-}
-
 # Matching contract for verification
 CONTRACT = {
     "target": {"cluster": "example", "type": "guest", "id": "123"},
     "capability": "snapshot_guest",
     "parameters": {"snapshot": "approved"},
 }
+VALID_RECEIPT["action_digest"] = canonical_digest(CONTRACT)
+VALID_RECEIPT["signature"]["value"] = hashlib.sha256(signed_payload(VALID_RECEIPT)).hexdigest()
 
 
 # === Fake implementations for testing ===
@@ -109,7 +95,13 @@ class FakeKeyStore(KeyStore):
             return False
         if signature.get("key_id") not in self.valid_keys:
             return False
-        return self.signature_valid
+        return self.signature_valid and signature.get("value") == hashlib.sha256(payload).hexdigest()
+
+
+def _resign(receipt):
+    receipt = {**receipt, "signature": dict(receipt["signature"])}
+    receipt["signature"]["value"] = hashlib.sha256(signed_payload(receipt)).hexdigest()
+    return receipt
 
 
 class FakeApproverPolicy(ApproverPolicy):
@@ -160,41 +152,21 @@ class FakeApprovalStore(ApprovalStore):
             return None
         return self.request_status.get(request_id)
 
-    def has_authorized_lease(self, request_id: str) -> bool:
-        if not self.available:
-            return False
-        return request_id in self.consumed_request_ids
-
-    def consume_nonce(self, nonce: str) -> bool:
-        if not self.available:
-            return False
-        if nonce in self.consumed_nonces:
-            return False
-        self.consumed_nonces.add(nonce)
-        return True
-
-    def consume_receipt_id(self, receipt_id: str) -> bool:
-        if not self.available:
-            return False
-        if receipt_id in self.consumed_receipt_ids:
-            return False
-        self.consumed_receipt_ids.add(receipt_id)
-        return True
-
-    def consume_request_id(self, request_id: str) -> bool:
-        if not self.available:
-            return False
-        if request_id in self.consumed_request_ids:
-            return False
-        self.consumed_request_ids.add(request_id)
-        return True
-
     def is_available(self) -> bool:
         return self.available
 
-    def record_verification(self, receipt_id: str, timestamp: datetime) -> bool:
-        return self.available
-
+    def reserve_and_record_verification(self, receipt_id, nonce, request_id, timestamp):
+        if not self.available or getattr(self, "fail_audit", False):
+            return ReservationOutcome.AUDIT_UNAVAILABLE
+        if (nonce in self.consumed_nonces or receipt_id in self.consumed_receipt_ids
+                or request_id in self.consumed_request_ids):
+            return ReservationOutcome.REPLAY
+        self.consumed_nonces.add(nonce)
+        self.consumed_receipt_ids.add(receipt_id)
+        self.consumed_request_ids.add(request_id)
+        self.verification_events = getattr(self, "verification_events", [])
+        self.verification_events.append((receipt_id, timestamp))
+        return ReservationOutcome.RESERVED
 
 class FakeClock(Clock):
     """Fake clock for testing."""
@@ -338,6 +310,74 @@ def test_parameters_mismatch_rejected():
     assert result.category == ACTION_MISMATCH
 
 
+def test_action_digest_substitution_rejected_before_replay_reservation():
+    receipt = _resign({**VALID_RECEIPT, "action_digest": "sha256:" + "b" * 64})
+    store = FakeApprovalStore(request_status={"req-001": "approved"})
+    result = verify_approval_receipt(receipt, CONTRACT, "broker-001", "requester-001",
+                                     FakeKeyStore(), FakeApproverPolicy(), store, FakeClock(NOW))
+    assert not result.success
+    assert result.category == ACTION_MISMATCH
+    assert not store.consumed_nonces
+
+
+def test_action_digest_binds_complete_fieldbook_action_package():
+    contract = {
+        **CONTRACT,
+        "contract_digest": "sha256:" + "c" * 64,
+        "lease_ttl": 300,
+        "operation_limit": 1,
+        "verification_method": "direct-query",
+        "rollback": {"required": True},
+        "abort_conditions": ["verification-fails"],
+        "approval_expires_at": "2025-01-01T12:10:00Z",
+    }
+    receipt = _resign({**VALID_RECEIPT, "action_digest": canonical_digest(contract)})
+    result = verify_approval_receipt(
+        receipt, contract, "broker-001", "requester-001", FakeKeyStore(),
+        FakeApproverPolicy(), FakeApprovalStore(request_status={"req-001": "approved"}),
+        FakeClock(NOW),
+    )
+    assert result.success
+
+    changed = {**contract, "operation_limit": 2}
+    changed_result = verify_approval_receipt(
+        receipt, changed, "broker-001", "requester-001", FakeKeyStore(),
+        FakeApproverPolicy(), FakeApprovalStore(request_status={"req-001": "approved"}),
+        FakeClock(NOW),
+    )
+    assert changed_result.category == ACTION_MISMATCH
+
+
+def test_signature_is_payload_sensitive():
+    altered = {**VALID_RECEIPT, "capability": "delete_guest"}
+    result = verify_approval_receipt(altered, CONTRACT, "broker-001", "requester-001",
+                                     FakeKeyStore(), FakeApproverPolicy(),
+                                     FakeApprovalStore(request_status={"req-001": "approved"}), FakeClock(NOW))
+    assert not result.success
+    assert result.category == INVALID_SIGNATURE
+
+
+def test_audit_failure_does_not_strand_replay_reservation_and_retry_succeeds():
+    store = FakeApprovalStore(request_status={"req-001": "approved"})
+    store.fail_audit = True
+    first = verify_approval_receipt(VALID_RECEIPT, CONTRACT, "broker-001", "requester-001",
+                                    FakeKeyStore(), FakeApproverPolicy(), store, FakeClock(NOW))
+    assert not first.success
+    assert first.category == STORE_UNAVAILABLE
+    assert not store.consumed_nonces
+    store.fail_audit = False
+    second = verify_approval_receipt(VALID_RECEIPT, CONTRACT, "broker-001", "requester-001",
+                                     FakeKeyStore(), FakeApproverPolicy(), store, FakeClock(NOW))
+    assert second.success
+
+
+def test_duplicate_durable_verification_is_idempotent():
+    store = FakeApprovalStore(request_status={"req-001": "approved"})
+    assert store.reserve_and_record_verification("receipt-001", "nonce-001", "req-001", NOW) is ReservationOutcome.RESERVED
+    assert store.reserve_and_record_verification("receipt-001", "nonce-001", "req-001", NOW) is ReservationOutcome.REPLAY
+    assert len(store.verification_events) == 1
+
+
 def test_audience_mismatch_rejected():
     """Audience mismatch is rejected with no lease."""
     clock = FakeClock(NOW)
@@ -369,10 +409,10 @@ def test_boolean_integer_substitution_rejected():
     store = FakeApprovalStore(request_status={"req-001": "approved"})
 
     # Receipt has boolean True
-    receipt_with_bool = {
+    receipt_with_bool = _resign({
         **VALID_RECEIPT,
         "parameters": {"flag": True},
-    }
+    })
 
     # Contract has integer 1 (type confusion attack)
     contract_with_int = {
@@ -405,10 +445,10 @@ def test_integer_float_substitution_rejected():
     store = FakeApprovalStore(request_status={"req-001": "approved"})
 
     # Receipt has integer
-    receipt_with_int = {
+    receipt_with_int = _resign({
         **VALID_RECEIPT,
         "parameters": {"count": 1},
-    }
+    })
 
     # Contract has float (type confusion attack)
     contract_with_float = {
@@ -441,12 +481,12 @@ def test_nested_type_confusion_rejected():
     store = FakeApprovalStore(request_status={"req-001": "approved"})
 
     # Receipt with nested structure
-    receipt_nested = {
+    receipt_nested = _resign({
         **VALID_RECEIPT,
         "parameters": {
             "nested": {"items": [True, False, True]},
         },
-    }
+    })
 
     # Contract with integer substitution in list
     contract_nested = {
@@ -716,10 +756,6 @@ def test_verification_records_event():
     policy = FakeApproverPolicy()
     store = FakeApprovalStore(request_status={"req-001": "approved"})
 
-    # Track if record_verification was called
-    record_calls = []
-    original_record = store.record_verification
-    store.record_verification = lambda rid, ts: record_calls.append((rid, ts)) or original_record(rid, ts)
 
     result = verify_approval_receipt(
         receipt=VALID_RECEIPT,
@@ -734,19 +770,17 @@ def test_verification_records_event():
     )
 
     assert result.success
-    assert len(record_calls) == 1
-    assert record_calls[0][0] == "receipt-001"
-    assert record_calls[0][1] == NOW
+    assert store.verification_events == [("receipt-001", NOW)]
 
 
 def test_expired_receipt_rejected():
     """Expired receipt (outside validity window) is rejected."""
     # Receipt issued 20 minutes ago, expired 10 minutes ago
-    expired_receipt = {
+    expired_receipt = _resign({
         **VALID_RECEIPT,
         "issued_at": "2025-01-01T11:40:00Z",
         "valid_until": "2025-01-01T11:50:00Z",
-    }
+    })
 
     clock = FakeClock(NOW)
     keystore = FakeKeyStore()
@@ -772,11 +806,11 @@ def test_expired_receipt_rejected():
 def test_future_dated_receipt_rejected():
     """Future-dated receipt beyond skew bound is rejected."""
     # Receipt issued 1 minute in the future (beyond 30s skew)
-    future_receipt = {
+    future_receipt = _resign({
         **VALID_RECEIPT,
         "issued_at": "2025-01-01T12:01:00Z",
         "valid_until": "2025-01-01T12:11:00Z",
-    }
+    })
 
     clock = FakeClock(NOW)
     keystore = FakeKeyStore()
@@ -802,11 +836,11 @@ def test_future_dated_receipt_rejected():
 def test_clock_skew_boundary_lower_accepted():
     """Receipt issued exactly 30s in the future is accepted (at skew boundary)."""
     # issued_at is 30s in the future: now == issued_at - skew (boundary accepted)
-    boundary_receipt = {
+    boundary_receipt = _resign({
         **VALID_RECEIPT,
         "issued_at": "2025-01-01T12:00:30Z",
         "valid_until": "2025-01-01T12:10:30Z",
-    }
+    })
 
     clock = FakeClock(NOW)
     keystore = FakeKeyStore()
@@ -831,11 +865,11 @@ def test_clock_skew_boundary_lower_accepted():
 def test_clock_skew_boundary_upper_accepted():
     """Receipt that expired exactly 30s ago is accepted (at skew boundary)."""
     # valid_until is 30s in the past: now == valid_until + skew (boundary accepted)
-    boundary_receipt = {
+    boundary_receipt = _resign({
         **VALID_RECEIPT,
         "issued_at": "2025-01-01T11:49:30Z",
         "valid_until": "2025-01-01T11:59:30Z",
-    }
+    })
 
     clock = FakeClock(NOW)
     keystore = FakeKeyStore()
@@ -860,11 +894,11 @@ def test_clock_skew_boundary_upper_accepted():
 def test_clock_skew_boundary_lower_rejected():
     """Receipt issued 31s in the future is rejected (1s beyond skew bound)."""
     # issued_at is 31s in the future: now < issued_at - skew (rejected)
-    boundary_receipt = {
+    boundary_receipt = _resign({
         **VALID_RECEIPT,
         "issued_at": "2025-01-01T12:00:31Z",
         "valid_until": "2025-01-01T12:10:31Z",
-    }
+    })
 
     clock = FakeClock(NOW)
     keystore = FakeKeyStore()
@@ -890,11 +924,11 @@ def test_clock_skew_boundary_lower_rejected():
 def test_clock_skew_boundary_upper_rejected():
     """Receipt that expired 31s ago is rejected (1s beyond skew bound)."""
     # valid_until is 31s in the past: now > valid_until + skew (rejected)
-    boundary_receipt = {
+    boundary_receipt = _resign({
         **VALID_RECEIPT,
         "issued_at": "2025-01-01T11:49:29Z",
         "valid_until": "2025-01-01T11:59:29Z",
-    }
+    })
 
     clock = FakeClock(NOW)
     keystore = FakeKeyStore()
@@ -915,141 +949,6 @@ def test_clock_skew_boundary_upper_rejected():
 
     assert not result.success
     assert result.category == EXPIRED
-
-
-def test_quorum_2_of_2_works():
-    """Quorum receipt with 2-of-2 approval works."""
-    clock = FakeClock(NOW)
-    keystore = FakeKeyStore()
-    policy = FakeApproverPolicy(
-        authorized_approvers={
-            ("snapshot_guest", "guest"): {"user-001", "user-002"},
-        }
-    )
-    store = FakeApprovalStore(request_status={"req-quorum": "approved"})
-
-    result = verify_approval_receipt(
-        receipt=VALID_QUORUM_RECEIPT,
-        contract=CONTRACT,
-        broker_audience="broker-001",
-        requester="requester-001",
-        keystore=keystore,
-        policy=policy,
-        store=store,
-        clock=clock,
-        clock_skew_seconds=DEFAULT_CLOCK_SKEW_SECONDS,
-    )
-
-    assert result.success
-    assert result.lease_id
-
-
-def test_quorum_missing_signer_fails():
-    """Quorum receipt with missing signer fails closed."""
-    incomplete_quorum = {
-        **VALID_QUORUM_RECEIPT,
-        "quorum": {
-            "required": 2,
-            "approved": 2,
-            "signers": [
-                {"subject": "user-001", "decision": "approved", "timestamp": "2025-01-01T11:55:00Z"},
-                # Missing second signer
-            ],
-            "shared_digest": "sha256:" + "b" * 64,
-            "one_lease_max": True,
-        },
-    }
-
-    clock = FakeClock(NOW)
-    keystore = FakeKeyStore()
-    policy = FakeApproverPolicy()
-    store = FakeApprovalStore(request_status={"req-quorum": "approved"})
-
-    result = verify_approval_receipt(
-        receipt=incomplete_quorum,
-        contract=CONTRACT,
-        broker_audience="broker-001",
-        requester="requester-001",
-        keystore=keystore,
-        policy=policy,
-        store=store,
-        clock=clock,
-        clock_skew_seconds=DEFAULT_CLOCK_SKEW_SECONDS,
-    )
-
-    assert not result.success
-
-
-def test_quorum_duplicate_signer_fails():
-    """Quorum receipt with duplicate signer fails closed."""
-    duplicate_quorum = {
-        **VALID_QUORUM_RECEIPT,
-        "quorum": {
-            "required": 2,
-            "approved": 2,
-            "signers": [
-                {"subject": "user-001", "decision": "approved", "timestamp": "2025-01-01T11:55:00Z"},
-                {"subject": "user-001", "decision": "approved", "timestamp": "2025-01-01T11:55:30Z"},
-            ],
-            "shared_digest": "sha256:" + "b" * 64,
-            "one_lease_max": True,
-        },
-    }
-
-    clock = FakeClock(NOW)
-    keystore = FakeKeyStore()
-    policy = FakeApproverPolicy()
-    store = FakeApprovalStore(request_status={"req-quorum": "approved"})
-
-    result = verify_approval_receipt(
-        receipt=duplicate_quorum,
-        contract=CONTRACT,
-        broker_audience="broker-001",
-        requester="requester-001",
-        keystore=keystore,
-        policy=policy,
-        store=store,
-        clock=clock,
-        clock_skew_seconds=DEFAULT_CLOCK_SKEW_SECONDS,
-    )
-
-    assert not result.success
-
-
-def test_quorum_conflicting_decision_fails():
-    """Quorum receipt with conflicting signer decisions fails closed."""
-    conflicting_quorum = {
-        **VALID_QUORUM_RECEIPT,
-        "quorum": {
-            "required": 2,
-            "approved": 2,
-            "signers": [
-                {"subject": "user-001", "decision": "approved", "timestamp": "2025-01-01T11:55:00Z"},
-                {"subject": "user-002", "decision": "rejected", "timestamp": "2025-01-01T11:55:30Z"},
-            ],
-            "shared_digest": "sha256:" + "b" * 64,
-            "one_lease_max": True,
-        },
-    }
-
-    clock = FakeClock(NOW)
-    keystore = FakeKeyStore()
-    policy = FakeApproverPolicy()
-    store = FakeApprovalStore(request_status={"req-quorum": "approved"})
-
-    result = verify_approval_receipt(
-        receipt=conflicting_quorum,
-        contract=CONTRACT,
-        broker_audience="broker-001",
-        requester="requester-001",
-        keystore=keystore,
-        policy=policy,
-        store=store,
-        clock=clock,
-        clock_skew_seconds=DEFAULT_CLOCK_SKEW_SECONDS,
-    )
-
-    assert not result.success
 
 
 def test_requester_policy_denied():

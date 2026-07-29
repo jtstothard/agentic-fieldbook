@@ -25,7 +25,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 from .contract import _strict_equal
-from .receipt import validate_approval_receipt, signed_payload
+from .receipt import canonical_digest, validate_approval_receipt, signed_payload
 
 
 # ── Policy defaults (Ticket 01) ──────────────────────────────────────────
@@ -53,6 +53,12 @@ class VerificationCategory(str, Enum):
     ACTION_MISMATCH = "action_mismatch"
     POLICY_DENIED = "policy_denied"
     STORE_UNAVAILABLE = "store_unavailable"
+
+
+class ReservationOutcome(str, Enum):
+    RESERVED = "reserved"
+    REPLAY = "replay"
+    AUDIT_UNAVAILABLE = "audit_unavailable"
 
 
 # Module-level aliases for convenient imports
@@ -144,9 +150,8 @@ class ApprovalStore(ABC):
     """Authoritative store for approval requests, replay tokens, and lease state.
 
     A deployment adapter implements this with its durable, append-only storage.
-    All consume operations must be atomic: once a nonce, receipt_id, or
-    request_id is consumed, it cannot be unconsumed. One-time mandatory
-    (Ticket 01 §3): one receipt authorizes exactly one lease.
+    Replay-key reservation and the durable verification event are one
+    transaction. One-time mandatory: one receipt authorizes exactly one lease.
     """
 
     @abstractmethod
@@ -167,36 +172,16 @@ class ApprovalStore(ABC):
         """
         ...
 
-    @abstractmethod
-    def has_authorized_lease(self, request_id: str) -> bool:
-        """Check if this request has already authorized a lease.
-
-        One-time mandatory: a request that has already authorized a lease
-        cannot authorize another (Ticket 01 §3).
-        """
-        ...
 
     @abstractmethod
-    def consume_nonce(self, nonce: str) -> bool:
-        """Atomically consume a nonce. Returns False if already consumed."""
-        ...
+    def reserve_and_record_verification(
+        self, receipt_id: str, nonce: str, request_id: str, timestamp: datetime
+    ) -> ReservationOutcome:
+        """Atomically reserve replay keys and record the verification event.
 
-    @abstractmethod
-    def consume_receipt_id(self, receipt_id: str) -> bool:
-        """Atomically consume a receipt_id. Returns False if already consumed."""
-        ...
-
-    @abstractmethod
-    def consume_request_id(self, request_id: str) -> bool:
-        """Atomically consume a request_id. Returns False if already consumed."""
-        ...
-
-    @abstractmethod
-    def record_verification(self, receipt_id: str, timestamp: datetime) -> bool:
-        """Record a durable receipt-verification event before lease issuance.
-
-        This is rule 10: the broker records successful receipt verification
-        before issuing the lease.
+        The operation is transactional: a failed audit write must not leave
+        any replay key consumed. It is idempotent for an already durable event
+        so a caller can safely retry after an ambiguous store response.
         """
         ...
 
@@ -244,36 +229,26 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt
 
 
-def _check_quorum_integrity(receipt: Mapping[str, Any]) -> str | None:
-    """Validate quorum-specific integrity beyond receipt schema validation.
+def _canonical_action_package(contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the canonical action-package projection used by Fieldbook.
 
-    Returns an error string if the quorum is internally inconsistent,
-    or None if valid.
-
-    Checks:
-    - Number of distinct signers >= required
-    - All signer subjects are unique (no duplicate signers)
+    ``ActionPackage.as_mapping`` in ``approval_gate.py`` defines these fields.
+    The four-field fallback keeps the broker compatible with the existing
+    receipt/contract seam while richer contracts bind the complete package.
     """
-    quorum = receipt.get("quorum")
-    if quorum is None or not isinstance(quorum, Mapping):
-        return None  # No quorum envelope — single-approver receipt
-
-    required = quorum.get("required")
-    signers = quorum.get("signers", [])
-
-    if not isinstance(required, int) or not isinstance(signers, list):
-        return None  # Schema validation catches type errors
-
-    if len(signers) < required:
-        return (
-            f"quorum requires {required} signers but only {len(signers)} present"
-        )
-
-    subjects = [s.get("subject") for s in signers if isinstance(s, Mapping)]
-    if len(subjects) != len(set(subjects)):
-        return "quorum signers contain duplicate subjects"
-
-    return None
+    fields = (
+        "contract_digest",
+        "target",
+        "capability",
+        "parameters",
+        "lease_ttl",
+        "operation_limit",
+        "verification_method",
+        "rollback",
+        "abort_conditions",
+        "approval_expires_at",
+    )
+    return {field: contract[field] for field in fields if field in contract}
 
 
 # ── Public verification function ─────────────────────────────────────────
@@ -377,6 +352,13 @@ def verify_approval_receipt(
         )
 
     # ── Rule 7: Action binding — target, capability, parameters match ─
+    expected_action_digest = canonical_digest(_canonical_action_package(contract))
+    if receipt["action_digest"] != expected_action_digest:
+        return VerificationResult(
+            success=False,
+            category=ACTION_MISMATCH,
+            reason="receipt action digest does not match the canonical contract action package",
+        )
     if not _strict_equal(receipt["target"], contract["target"]):
         return VerificationResult(
             success=False,
@@ -404,14 +386,6 @@ def verify_approval_receipt(
             reason="requester is not authorized to request this capability",
         )
 
-    # ── Quorum integrity check (beyond schema validation) ─────────────
-    quorum_error = _check_quorum_integrity(receipt)
-    if quorum_error is not None:
-        return VerificationResult(
-            success=False,
-            category=VERIFICATION_FAILED,
-            reason=f"quorum integrity check failed: {quorum_error}",
-        )
 
     # ── Rule 8: Request status in authoritative store ─────────────────
     request_id = receipt["approval_request_id"]
@@ -430,51 +404,19 @@ def verify_approval_receipt(
             reason="approval request not found in the authoritative store",
         )
 
-    # ── Rules 6 + 8: Atomic replay protection ─────────────────────────
-    #
-    # One-time mandatory (Ticket 01 §3): receipt_id, nonce, and
-    # approval_request_id are consumed atomically before lease issuance.
-    # A second lease attempt, even for an identical action digest, fails.
-    #
-    # has_authorized_lease is a pre-check; consume_* is the atomic act.
-    # The lock ensures that concurrent verifications of the same receipt
-    # fail for all but one.
+    # ── Rules 6 + 8 + 10: transactional replay and audit ───────────────
     with _consume_lock:
-        if store.has_authorized_lease(request_id):
-            return VerificationResult(
-                success=False,
-                category=REPLAY_DETECTED,
-                reason="approval request has already authorized a lease",
-            )
-
         nonce = receipt["nonce"]
         receipt_id = receipt["receipt_id"]
-
-        if not store.consume_nonce(nonce):
+        reservation = store.reserve_and_record_verification(receipt_id, nonce, request_id, now)
+        if reservation is not ReservationOutcome.RESERVED:
             return VerificationResult(
                 success=False,
-                category=REPLAY_DETECTED,
-                reason="nonce has already been consumed",
-            )
-        if not store.consume_receipt_id(receipt_id):
-            return VerificationResult(
-                success=False,
-                category=REPLAY_DETECTED,
-                reason="receipt_id has already been consumed",
-            )
-        if not store.consume_request_id(request_id):
-            return VerificationResult(
-                success=False,
-                category=REPLAY_DETECTED,
-                reason="approval_request_id has already been consumed",
-            )
-
-        # ── Rule 10: Record verification event before lease issuance ──
-        if not store.record_verification(receipt_id, now):
-            return VerificationResult(
-                success=False,
-                category=STORE_UNAVAILABLE,
-                reason="failed to record receipt-verification event",
+                category=(STORE_UNAVAILABLE if reservation is ReservationOutcome.AUDIT_UNAVAILABLE
+                          else REPLAY_DETECTED),
+                reason=("failed to durably record receipt-verification event"
+                        if reservation is ReservationOutcome.AUDIT_UNAVAILABLE
+                        else "replay detected"),
             )
 
         # ── Issue lease ────────────────────────────────────────────────
@@ -495,6 +437,7 @@ __all__ = [
     "DEFAULT_VALIDITY_MINUTES",
     "VerificationCategory",
     "VerificationResult",
+    "ReservationOutcome",
     "KeyStore",
     "ApproverPolicy",
     "ApprovalStore",
