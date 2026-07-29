@@ -56,6 +56,25 @@ def test_approval_binding_must_match_contract_fields():
     assert errors == ["approval_binding mismatch: target"]
 
 
+def test_empty_target_is_rejected():
+    errors = validate_capability_approval({
+        **VALID,
+        "target": {},
+        "approval_binding": {**VALID["approval_binding"], "target": {}},
+    })
+    assert errors == ["target must be a non-empty mapping"]
+
+
+def test_digest_whitespace_is_rejected():
+    padded = f" {VALID['contract_digest']} "
+    errors = validate_capability_approval({
+        **VALID,
+        "contract_digest": padded,
+        "approval_binding": {**VALID["approval_binding"], "contract_digest": padded},
+    })
+    assert errors == ["contract_digest must be a sha256:<64 hex characters> digest"]
+
+
 def test_malformed_strings_and_digest_are_rejected():
     errors = validate_capability_approval({
         **VALID,

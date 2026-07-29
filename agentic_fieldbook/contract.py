@@ -43,12 +43,13 @@ def validate_capability_approval(contract: Mapping[str, Any]) -> list[str]:
                   "capability"):
         if field in contract and (not isinstance(contract[field], str) or not contract[field].strip()):
             errors.append(f"{field} must be a non-empty string")
-    if "target" in contract and not isinstance(contract["target"], Mapping):
-        errors.append("target must be a mapping")
+    if "target" in contract and (
+            not isinstance(contract["target"], Mapping) or not contract["target"]):
+        errors.append("target must be a non-empty mapping")
     digest = contract.get("contract_digest")
     if "contract_digest" in contract and (
             not isinstance(digest, str) or
-            not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest.strip())):
+            not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)):
         errors.append("contract_digest must be a sha256:<64 hex characters> digest")
     if "parameters" in contract and not isinstance(contract["parameters"], Mapping):
         errors.append("parameters must be a mapping")
