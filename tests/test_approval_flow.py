@@ -12,7 +12,7 @@ from agentic_fieldbook.approval_gate import (
     RequesterContext, RevocationResult, provider_assertion,
 )
 from agentic_fieldbook.broker import (
-    ACTION_MISMATCH, ApprovalStore, ApproverPolicy, Clock, KeyStore,
+    ACTION_MISMATCH, AUDIENCE_MISMATCH, VERIFICATION_FAILED, ApprovalStore, ApproverPolicy, Clock, KeyStore,
     ReservationOutcome, verify_approval_receipt,
 )
 from agentic_fieldbook.receipt import canonical_digest, signed_payload
@@ -27,7 +27,8 @@ class Adapter(ApprovalGateAdapter):
     def create_request(self, action_package, requester_context):
         self.request = ApprovalRequest("req-1", action_package.digest(), action_package.as_mapping(),
                                       requester_context.requester_ref, requester_context.audience,
-                                      action_package.approval_expires_at)
+                                      action_package.approval_expires_at,
+                                      idempotency_key=requester_context.idempotency_key)
         return self.request
 
     def present(self, request_id):
@@ -99,7 +100,7 @@ def make_case():
 def test_native_flow_connects_authenticated_decision_to_broker_lease():
     contract, package, receipt = make_case()
     store = Store()
-    flow = NativeApprovalFlow(Adapter(receipt), Keys(), Policy(), store, FixedClock())
+    flow = NativeApprovalFlow(Adapter(receipt), Keys(), Policy(), store, FixedClock(), "broker-1")
     result = flow.authorize(package, RequesterContext("requester-1", "broker-1", "retry-1"),
                             provider_assertion("req-1", "broker-1", "2099-01-01T00:00:00Z", "human-1"))
     assert result.success and result.lease_id
@@ -108,10 +109,75 @@ def test_native_flow_connects_authenticated_decision_to_broker_lease():
 
 def test_native_flow_does_not_authorize_changed_action():
     contract, package, receipt = make_case()
-    flow = NativeApprovalFlow(Adapter(receipt), Keys(), Policy(), Store(), FixedClock())
+    flow = NativeApprovalFlow(Adapter(receipt), Keys(), Policy(), Store(), FixedClock(), "broker-1")
     changed = replace(package, parameters={"nested": {"flag": 1}}, contract_digest="")
     changed = replace(changed, contract_digest=changed.digest())
     result = flow.authorize(changed, RequesterContext("requester-1", "broker-1", "retry-1"),
                             provider_assertion("req-1", "broker-1", "2099-01-01T00:00:00Z", "human-1"))
-    assert not result.success and result.category is ACTION_MISMATCH
+    assert not result.success and result.category is VERIFICATION_FAILED
     assert not flow.store.events
+
+
+class SubstitutionAdapter(Adapter):
+    def present(self, request_id):
+        presented = dict(self.request.action_package)
+        presented["parameters"] = {"nested": {"flag": False}}
+        return PresentationResult(ApprovalOutcome.PRESENTED, request_id,
+                                  self.request.action_digest, presented)
+
+
+class IdentityAdapter(Adapter):
+    def present(self, request_id):
+        result = super().present(request_id)
+        return replace(result, approval_request_id="other-request")
+
+
+class MalformedAdapter(Adapter):
+    def present(self, request_id):
+        return object()
+
+
+class ThrowingAdapter(Adapter):
+    def present(self, request_id):
+        raise RuntimeError("private identity provider detail")
+
+
+def make_flow(adapter, audience="broker-1"):
+    return NativeApprovalFlow(adapter, Keys(), Policy(), Store(), FixedClock(), audience)
+
+
+def assertion_for_audience(audience):
+    return provider_assertion("req-1", audience, "2099-01-01T00:00:00Z", "human-1")
+
+
+def test_native_flow_rejects_presented_package_substitution_before_decision():
+    contract, package, receipt = make_case()
+    adapter = SubstitutionAdapter(receipt)
+    flow = make_flow(adapter)
+    result = flow.authorize(package, RequesterContext("requester-1", "broker-1", "retry-1"),
+                                          assertion_for_audience("broker-1"))
+    assert not result.success and result.category is VERIFICATION_FAILED
+    assert not flow.store.events
+
+
+def test_native_flow_requires_deployment_owned_audience_and_rejects_override():
+    contract, package, receipt = make_case()
+    flow = make_flow(Adapter(receipt), "broker-1")
+    result = flow.authorize(package, RequesterContext("requester-1", "attacker-audience", "retry-1"),
+                            assertion_for_audience("broker-1"))
+    assert not result.success and result.category is AUDIENCE_MISMATCH
+
+
+def test_native_flow_rejects_returned_request_identity_mismatch():
+    contract, package, receipt = make_case()
+    result = make_flow(IdentityAdapter(receipt)).authorize(
+        package, RequesterContext("requester-1", "broker-1", "retry-1"), assertion_for_audience("broker-1"))
+    assert not result.success and result.category is VERIFICATION_FAILED
+
+
+def test_native_flow_normalizes_malformed_and_throwing_adapters_fail_closed():
+    contract, package, receipt = make_case()
+    context = RequesterContext("requester-1", "broker-1", "retry-1")
+    for adapter in (MalformedAdapter(receipt), ThrowingAdapter(receipt)):
+        result = make_flow(adapter).authorize(package, context, assertion_for_audience("broker-1"))
+        assert not result.success and result.category is VERIFICATION_FAILED
