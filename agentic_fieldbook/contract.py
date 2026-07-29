@@ -4,7 +4,59 @@ import os
 import sys
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Mapping, Optional
+
+import yaml
+
+
+CAPABILITY_APPROVAL_REQUIRED_FIELDS = (
+    "broker_type", "broker_endpoint", "lease_ttl", "operation_limit",
+    "contract_digest", "verification_method", "target_immutable",
+    "approval_channel", "approval_binding",
+)
+
+
+def validate_capability_approval(contract: Mapping[str, Any]) -> list[str]:
+    """Return deterministic validation errors for a capability-approval contract.
+
+    The domain YAML is a descriptive template; this function validates actual
+    runtime contract data and therefore never treats its example defaults as
+    proof that a contract is safe.
+    """
+    errors: list[str] = []
+    for field in CAPABILITY_APPROVAL_REQUIRED_FIELDS:
+        if field not in contract or contract[field] is None or contract[field] == "":
+            errors.append(f"missing required field: {field}")
+
+    if "lease_ttl" in contract and not isinstance(contract["lease_ttl"], bool):
+        if not isinstance(contract["lease_ttl"], int) or contract["lease_ttl"] < 1:
+            errors.append("lease_ttl must be an integer >= 1")
+    if "operation_limit" in contract and not isinstance(contract["operation_limit"], bool):
+        if not isinstance(contract["operation_limit"], int) or contract["operation_limit"] < 1:
+            errors.append("operation_limit must be an integer >= 1")
+    if "target_immutable" in contract and contract["target_immutable"] is not True:
+        errors.append("target_immutable must be true for capability-approval contracts")
+    return errors
+
+
+def check_capability_approval(path: str) -> int:
+    """Validate a YAML capability-approval contract and print named failures."""
+    contract_path = Path(path)
+    try:
+        data = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        print(f"ERROR: cannot load capability-approval contract {path}: {exc}", file=sys.stderr)
+        return 1
+    if not isinstance(data, dict):
+        print("ERROR: capability-approval contract must be a YAML mapping", file=sys.stderr)
+        return 1
+    errors = validate_capability_approval(data)
+    if errors:
+        for error in errors:
+            print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    print(f"Capability-approval contract valid: {path}")
+    return 0
 
 
 def _get_git_common_dir(workspace: Path) -> Optional[Path]:

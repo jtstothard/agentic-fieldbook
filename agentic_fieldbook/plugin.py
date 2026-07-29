@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 from typing import Any
 from .preflight import check_preflight
-from .contract import check_contract
+from .contract import check_contract, check_capability_approval
 
 PLUGIN_NAME = "agentic-fieldbook"
 PLUGIN_VERSION = (Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
@@ -145,10 +145,11 @@ def _register_aos_cli(subparsers: Any) -> None:
         "contract",
         help="Discover the exact test command for a workspace",
     )
-    contract_parser.add_argument(
-        "--workspace",
-        required=True,
-        help="Path to the workspace to inspect",
+    contract_group = contract_parser.add_mutually_exclusive_group(required=True)
+    contract_group.add_argument("--workspace", help="Path to the workspace to inspect")
+    contract_group.add_argument(
+        "--capability-approval",
+        help="YAML capability-approval contract to validate",
     )
 
     # map-lanes subcommand
@@ -565,6 +566,9 @@ def _cmd_preflight(args: Any) -> int:
 
 def _cmd_contract(args: Any) -> int:
     """Discover and print the test runner command for a workspace."""
+    capability_approval = getattr(args, "capability_approval", None)
+    if capability_approval:
+        return check_capability_approval(capability_approval)
     workspace = getattr(args, "workspace", None)
     if not workspace:
         print("ERROR: --workspace is required", file=sys.stderr)
