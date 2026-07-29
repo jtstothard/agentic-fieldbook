@@ -162,7 +162,7 @@ class PortableTaskStore:
 
             try:
                 record = CanonicalTaskRecord.from_dict(data)
-            except (AttributeError, TypeError, KeyError) as exc:
+            except (AttributeError, TypeError, KeyError, ValueError) as exc:
                 raise CorruptedRecordError(
                     f"Corrupted record file {target_file}: invalid record structure: {exc}"
                 ) from exc

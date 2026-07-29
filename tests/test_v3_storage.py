@@ -373,6 +373,34 @@ class TestCorruptionDetection:
         with pytest.raises(CorruptedRecordError, match=task_id):
             store.load(task_id)
 
+    def test_load_normalizes_invalid_lifecycle_state(self, temp_dir: Path, sample_contract: TaskContract) -> None:
+        """A schema-valid record with an invalid lifecycle state is corruption."""
+        store = PortableTaskStore(base_dir=temp_dir)
+        task_id = "task-invalid-state"
+        (temp_dir / "tasks" / f"{task_id}.json").write_text(
+            json.dumps(
+                {
+                    "schema": "fieldbook.task-record.v1",
+                    "task_id": task_id,
+                    "contract": sample_contract.to_dict(),
+                    "state": "bogus",
+                    "history": [],
+                    "evidence": [],
+                    "governance": {},
+                }
+            )
+        )
+
+        with pytest.raises(CorruptedRecordError, match=task_id) as exc_info:
+            store.load(task_id)
+        assert isinstance(exc_info.value.__cause__, ValueError)
+
+        seen = []
+        assert store.list(on_error=lambda path, error: seen.append((path, error))) == []
+        assert len(seen) == 1
+        assert seen[0][0] == temp_dir / "tasks" / f"{task_id}.json"
+        assert isinstance(seen[0][1], CorruptedRecordError)
+
     def test_reports_corrupted_json_files(self, temp_dir: Path) -> None:
         """Store should report corrupted JSON files without crashing."""
         store = PortableTaskStore(base_dir=temp_dir)
