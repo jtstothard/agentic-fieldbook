@@ -288,10 +288,20 @@ def test_failed_high_risk_requires_rollback_evidence():
         reason="Blocked pending rollback",
     )
 
-    # Recover to EXECUTING, add rollback evidence, then fail
+    # Recovery must re-enter planning and obtain fresh independent approval.
+    record.transition(
+        LifecycleState.PLANNED,
+        actor="planner",
+        reason="replanned after blocked recovery",
+    )
+    record.transition(
+        LifecycleState.APPROVED,
+        actor="human-reapprover",
+        reason="fresh approval after replanning",
+    )
     record.transition(
         LifecycleState.EXECUTING,
-        actor="executor",
+        actor="executor-2",
         executor_capabilities=("prod-write",),
     )
     record.transition(

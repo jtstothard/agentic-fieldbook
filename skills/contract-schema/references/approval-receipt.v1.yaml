@@ -11,6 +11,8 @@ decision: ""  # REQUIRED. One of: "approved", "rejected", "expired", "revoked".
               # Only "approved" receipts authorize action; others are valid structurally.
 action_digest: ""  # REQUIRED. SHA256 digest of canonicalized action package.
                    # Format: "sha256:<64 hex characters>"
+contract_digest: ""  # REQUIRED. SHA256 digest of the expected contract declaration.
+                     # Format: "sha256:<64 hex characters>"; compared by the broker.
 target: {}  # REQUIRED. Non-empty immutable target identity (same validation as contract).
 capability: ""  # REQUIRED. Non-empty string naming the capability being approved.
 parameters: {}  # REQUIRED. Mapping of parameters for the capability action.

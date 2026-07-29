@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+import re
 from typing import Any, Iterable, Mapping
 
 from .governance import (
@@ -149,18 +150,20 @@ _FORWARD_TRANSITIONS: dict[LifecycleState, frozenset[LifecycleState]] = {
     LifecycleState.REVIEW: frozenset({LifecycleState.VERIFICATION, LifecycleState.EXECUTING}),
     LifecycleState.VERIFICATION: frozenset({LifecycleState.VERIFIED, LifecycleState.EXECUTING, LifecycleState.REVIEW}),
     # Recovery transitions from side states
-    LifecycleState.BLOCKED: frozenset({LifecycleState.PLANNED, LifecycleState.EXECUTING}),
-    LifecycleState.FAILED: frozenset({LifecycleState.PLANNED}),
+    LifecycleState.BLOCKED: frozenset({LifecycleState.PLANNED}),
 }
 # Explicit side transition table: which source states can go to which side states
 _SIDE_TRANSITION_TABLE: dict[LifecycleState, frozenset[LifecycleState]] = {
-    LifecycleState.PROPOSED: frozenset({LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
-    LifecycleState.PLANNED: frozenset({LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
-    LifecycleState.APPROVED: frozenset({LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
+    # Any primary state may be stopped by governance or execution failure.
+    LifecycleState.PROPOSED: frozenset({LifecycleState.BLOCKED, LifecycleState.FAILED, LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
+    LifecycleState.PLANNED: frozenset({LifecycleState.BLOCKED, LifecycleState.FAILED, LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
+    LifecycleState.APPROVED: frozenset({LifecycleState.BLOCKED, LifecycleState.FAILED, LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
     LifecycleState.EXECUTING: frozenset({LifecycleState.BLOCKED, LifecycleState.FAILED, LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
-    LifecycleState.REPORTED_COMPLETE: frozenset({LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
-    LifecycleState.REVIEW: frozenset({LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
-    LifecycleState.VERIFICATION: frozenset({LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
+    # Every non-terminal primary state can enter blocker/failure side states.
+    # reported_complete is only a claim, so review/verification may still reject it.
+    LifecycleState.REPORTED_COMPLETE: frozenset({LifecycleState.BLOCKED, LifecycleState.FAILED, LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
+    LifecycleState.REVIEW: frozenset({LifecycleState.BLOCKED, LifecycleState.FAILED, LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
+    LifecycleState.VERIFICATION: frozenset({LifecycleState.BLOCKED, LifecycleState.FAILED, LifecycleState.CANCELLED, LifecycleState.SUPERSEDED}),
 }
 _TERMINAL_STATES = frozenset({
     LifecycleState.VERIFIED,
@@ -204,6 +207,11 @@ class CanonicalTaskRecord:
     _history: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
     _evidence: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
     _governance: GovernanceState = field(default_factory=GovernanceState, init=False, repr=False)
+    _provenance: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+    _approval_epoch: int = field(default=0, init=False, repr=False)
+    _recovery_attempt: int = field(default=0, init=False, repr=False)
+    _approval_receipt_id: str | None = field(default=None, init=False, repr=False)
+    _approval_contract_digest: str | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def create(cls, contract: TaskContract, *, task_id: str) -> "CanonicalTaskRecord":
@@ -233,6 +241,31 @@ class CanonicalTaskRecord:
     @property
     def evidence(self) -> tuple[dict[str, Any], ...]:
         return tuple(self._evidence)
+
+    @property
+    def approval_epoch(self) -> int:
+        return self._approval_epoch
+
+    @property
+    def recovery_attempt(self) -> int:
+        return self._recovery_attempt
+
+    def bind_approval_receipt(self, *, receipt_id: str, contract_digest: str,
+                              epoch: int, recovery_attempt: int) -> None:
+        """Bind broker-validated approval to this exact recovery attempt."""
+        if (epoch != self._approval_epoch or recovery_attempt != self._recovery_attempt
+                or not receipt_id or not contract_digest):
+            raise InvalidTransitionError("approval receipt is stale for this recovery attempt")
+        self._approval_receipt_id = receipt_id
+        self._approval_contract_digest = contract_digest
+
+    def approval_receipt_is_current(self, *, receipt_id: str, contract_digest: str) -> bool:
+        return (receipt_id == self._approval_receipt_id
+                and contract_digest == self._approval_contract_digest)
+
+    @property
+    def has_current_approval_binding(self) -> bool:
+        return bool(self._approval_receipt_id and self._approval_contract_digest)
 
     def transition(
         self,
@@ -385,6 +418,14 @@ class CanonicalTaskRecord:
             "timestamp": datetime.now(tz=None).astimezone().isoformat(),
         })
         self._state = target_state
+        if target_state in {LifecycleState.BLOCKED, LifecycleState.FAILED}:
+            # Side-state recovery starts a new authorization epoch. Prior
+            # receipts and approvals are never valid for the next attempt.
+            self._approval_epoch += 1
+            self._recovery_attempt += 1
+            self._approval_receipt_id = None
+            self._approval_contract_digest = None
+            self._governance.approvals.clear()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -395,6 +436,11 @@ class CanonicalTaskRecord:
             "history": [dict(item) for item in self._history],
             "evidence": [dict(item) for item in self._evidence],
             "governance": self._governance.to_dict(),
+            "provenance": dict(self._provenance),
+            "approval_epoch": self._approval_epoch,
+            "recovery_attempt": self._recovery_attempt,
+            "approval_receipt_id": self._approval_receipt_id,
+            "approval_contract_digest": self._approval_contract_digest,
         }
 
     @classmethod
@@ -430,6 +476,26 @@ class CanonicalTaskRecord:
         # Restore governance state if present (backward compatible)
         if "governance" in data:
             record._governance = GovernanceState.from_dict(data["governance"])
+        if "provenance" in data:
+            if not isinstance(data["provenance"], dict):
+                raise ValueError("provenance must be an object")
+            record._provenance = dict(data["provenance"])
+        for field_name in ("approval_epoch", "recovery_attempt"):
+            value = data.get(field_name, 0)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+            setattr(record, f"_{field_name}", value)
+        receipt_id = data.get("approval_receipt_id")
+        digest = data.get("approval_contract_digest")
+        if receipt_id is not None and (not isinstance(receipt_id, str) or not receipt_id.strip()):
+            raise ValueError("approval_receipt_id must be a non-empty string or null")
+        if digest is not None and (not isinstance(digest, str)
+                                   or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)):
+            raise ValueError("approval_contract_digest must be a sha256:<64 hex characters> digest or null")
+        if (receipt_id is None) != (digest is None):
+            raise ValueError("approval receipt binding must contain both receipt_id and contract_digest")
+        record._approval_receipt_id = receipt_id
+        record._approval_contract_digest = digest
 
         return record
 

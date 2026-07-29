@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 import yaml
@@ -17,7 +18,7 @@ from .contract import _strict_equal, _valid_target_identity
 
 APPROVAL_RECEIPT_REQUIRED_FIELDS = (
     "receipt_version", "approval_request_id", "decision", "action_digest",
-    "target", "capability", "parameters", "issuer", "issued_at", "valid_until",
+    "contract_digest", "target", "capability", "parameters", "issuer", "issued_at", "valid_until",
     "audience", "receipt_id", "nonce", "signature",
 )
 
@@ -165,6 +166,19 @@ def signed_payload(receipt: Mapping[str, Any]) -> bytes:
     return canonical.encode("utf-8")
 
 
+def parse_utc_timestamp(value: Any) -> datetime:
+    """Parse a timezone-bearing ISO-8601 timestamp, or fail closed."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("timestamp must be a non-empty ISO-8601 string")
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
 def validate_approval_receipt(receipt: Mapping[str, Any]) -> list[str]:
     """Return deterministic validation errors for an approval receipt.
 
@@ -177,6 +191,10 @@ def validate_approval_receipt(receipt: Mapping[str, Any]) -> list[str]:
     Returns:
         List of error strings; empty if receipt is valid
     """
+    # This public seam must fail closed for look-alike inputs rather than
+    # raising while indexing a non-mapping.
+    if not isinstance(receipt, Mapping):
+        return ["receipt must be a mapping"]
     errors: list[str] = []
 
     # Check required fields
@@ -205,6 +223,12 @@ def validate_approval_receipt(receipt: Mapping[str, Any]) -> list[str]:
     ):
         errors.append("action_digest must be a sha256:<64 hex characters> digest")
 
+    contract_digest = receipt.get("contract_digest")
+    if "contract_digest" in receipt and (
+        not isinstance(contract_digest, str) or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", contract_digest)
+    ):
+        errors.append("contract_digest must be a sha256:<64 hex characters> digest")
+
     # Validate target identity
     if "target" in receipt and not _valid_target_identity(receipt["target"]):
         errors.append("target must contain non-empty identity values")
@@ -216,20 +240,22 @@ def validate_approval_receipt(receipt: Mapping[str, Any]) -> list[str]:
         if field in receipt and (not isinstance(receipt[field], str) or not receipt[field].strip()):
             errors.append(f"{field} must be a non-empty string")
 
-    # Validate ISO-8601 timestamps
+    # Validate ISO-8601 timestamps and ordering using parsed UTC values.
+    parsed_times: dict[str, datetime] = {}
     for field in ("issued_at", "valid_until"):
         if field in receipt:
             if not isinstance(receipt[field], str) or not receipt[field].strip():
                 errors.append(f"{field} must be a non-empty ISO-8601 timestamp")
+            else:
+                try:
+                    parsed_times[field] = parse_utc_timestamp(receipt[field])
+                except (TypeError, ValueError):
+                    errors.append(f"{field} must be a timezone-aware ISO-8601 timestamp")
 
     # Validate valid_until is after issued_at
-    if "issued_at" in receipt and "valid_until" in receipt:
-        issued = receipt["issued_at"]
-        valid = receipt["valid_until"]
-        if isinstance(issued, str) and isinstance(valid, str):
-            # ISO-8601 timestamps are lexicographically comparable when same format
-            if issued >= valid:
-                errors.append("valid_until must be after issued_at")
+    if "issued_at" in parsed_times and "valid_until" in parsed_times:
+        if parsed_times["issued_at"] >= parsed_times["valid_until"]:
+            errors.append("valid_until must be after issued_at")
 
     # Validate parameters is a mapping
     if "parameters" in receipt and not isinstance(receipt["parameters"], Mapping):

@@ -49,6 +49,7 @@ VALID_RECEIPT = {
     "approval_request_id": "req-001",
     "decision": "approved",
     "action_digest": "sha256:" + "a" * 64,
+    "contract_digest": "",
     "target": {"cluster": "example", "type": "guest", "id": "123"},
     "capability": "snapshot_guest",
     "parameters": {"snapshot": "approved"},
@@ -71,7 +72,9 @@ CONTRACT = {
     "capability": "snapshot_guest",
     "parameters": {"snapshot": "approved"},
 }
-VALID_RECEIPT["action_digest"] = canonical_digest(CONTRACT)
+CONTRACT["contract_digest"] = canonical_digest({k: v for k, v in CONTRACT.items() if k != "contract_digest"})
+VALID_RECEIPT["action_digest"] = canonical_digest({k: v for k, v in CONTRACT.items() if k != "contract_digest"})
+VALID_RECEIPT["contract_digest"] = CONTRACT["contract_digest"]
 VALID_RECEIPT["signature"]["value"] = hashlib.sha256(signed_payload(VALID_RECEIPT)).hexdigest()
 
 
@@ -323,7 +326,6 @@ def test_action_digest_substitution_rejected_before_replay_reservation():
 def test_action_digest_binds_complete_fieldbook_action_package():
     contract = {
         **CONTRACT,
-        "contract_digest": "sha256:" + "c" * 64,
         "lease_ttl": 300,
         "operation_limit": 1,
         "verification_method": "direct-query",
@@ -331,7 +333,9 @@ def test_action_digest_binds_complete_fieldbook_action_package():
         "abort_conditions": ["verification-fails"],
         "approval_expires_at": "2025-01-01T12:10:00Z",
     }
-    receipt = _resign({**VALID_RECEIPT, "action_digest": canonical_digest(contract)})
+    contract.pop("contract_digest", None)
+    contract["contract_digest"] = canonical_digest(contract)
+    receipt = _resign({**VALID_RECEIPT, "contract_digest": contract["contract_digest"], "action_digest": canonical_digest({k: v for k, v in contract.items() if k != "contract_digest"})})
     result = verify_approval_receipt(
         receipt, contract, "broker-001", "requester-001", FakeKeyStore(),
         FakeApproverPolicy(), FakeApprovalStore(request_status={"req-001": "approved"}),

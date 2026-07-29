@@ -25,7 +25,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 from .contract import _strict_equal
-from .receipt import canonical_digest, validate_approval_receipt, signed_payload
+from .receipt import canonical_digest, validate_approval_receipt, signed_payload, parse_utc_timestamp
 
 
 # ── Policy defaults (Ticket 01) ──────────────────────────────────────────
@@ -213,13 +213,7 @@ def _parse_timestamp(ts: str) -> datetime:
 
     Ensures the result is timezone-aware (UTC).
     """
-    cleaned = ts.strip()
-    if cleaned.endswith("Z"):
-        cleaned = cleaned[:-1] + "+00:00"
-    dt = datetime.fromisoformat(cleaned)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    return parse_utc_timestamp(ts)
 
 
 def _ensure_utc(dt: datetime) -> datetime:
@@ -248,7 +242,15 @@ def _canonical_action_package(contract: Mapping[str, Any]) -> dict[str, Any]:
         "abort_conditions",
         "approval_expires_at",
     )
-    return {field: contract[field] for field in fields if field in contract}
+    # ``contract_digest`` is a declaration of this digest, not part of its
+    # own domain.  This must match ActionPackage.canonical_action()/digest().
+    return {field: contract[field] for field in fields
+            if field in contract and field != "contract_digest"}
+
+
+def _canonical_contract_projection(contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the complete contract projection, excluding only its declaration."""
+    return {key: value for key, value in contract.items() if key != "contract_digest"}
 
 
 # ── Public verification function ─────────────────────────────────────────
@@ -285,6 +287,9 @@ def verify_approval_receipt(
         Never discloses secrets, signing material, or unnecessary private data.
     """
     # ── Rule 1: Receipt parses against supported version ───────────────
+    if not isinstance(receipt, Mapping) or not isinstance(contract, Mapping):
+        return VerificationResult(False, VERIFICATION_FAILED,
+                                  "receipt and contract must be mappings", "")
     errors = validate_approval_receipt(receipt)
     if errors:
         return VerificationResult(
@@ -337,8 +342,15 @@ def verify_approval_receipt(
 
     # ── Rule 5: Current time within validity window (with skew) ───────
     now = _ensure_utc(clock.utcnow())
-    issued_at = _parse_timestamp(receipt["issued_at"])
-    valid_until = _parse_timestamp(receipt["valid_until"])
+    try:
+        issued_at = _parse_timestamp(receipt["issued_at"])
+        valid_until = _parse_timestamp(receipt["valid_until"])
+    except (TypeError, ValueError):
+        return VerificationResult(False, VERIFICATION_FAILED,
+                                  "receipt timestamps are invalid", "")
+    if valid_until <= issued_at:
+        return VerificationResult(False, VERIFICATION_FAILED,
+                                  "receipt validity ordering is invalid", "")
     skew = timedelta(seconds=clock_skew_seconds)
 
     lower_bound = issued_at - skew
@@ -352,7 +364,26 @@ def verify_approval_receipt(
         )
 
     # ── Rule 7: Action binding — target, capability, parameters match ─
-    expected_action_digest = canonical_digest(_canonical_action_package(contract))
+    declared_contract_digest = contract.get("contract_digest")
+    try:
+        expected_contract_digest = canonical_digest(_canonical_contract_projection(contract))
+    except (TypeError, ValueError, KeyError):
+        return VerificationResult(False, ACTION_MISMATCH,
+                                  "submitted contract is malformed", "")
+    if (not isinstance(declared_contract_digest, str)
+            or declared_contract_digest != expected_contract_digest
+            or receipt["contract_digest"] != expected_contract_digest):
+        return VerificationResult(False, ACTION_MISMATCH,
+                                  "receipt contract digest does not match the complete contract projection", "")
+    try:
+        expected_action_digest = canonical_digest(_canonical_action_package(contract))
+    except (TypeError, ValueError, KeyError):
+        return VerificationResult(False, ACTION_MISMATCH,
+                                  "submitted contract action package is malformed", "")
+    required_action_fields = ("target", "capability", "parameters")
+    if any(field not in contract for field in required_action_fields):
+        return VerificationResult(False, ACTION_MISMATCH,
+                                  "submitted contract action package is incomplete", "")
     if receipt["action_digest"] != expected_action_digest:
         return VerificationResult(
             success=False,

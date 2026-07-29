@@ -21,6 +21,7 @@ VALID = {
     "approval_request_id": "req-001",
     "decision": "approved",
     "action_digest": "sha256:" + "a" * 64,
+    "contract_digest": "sha256:" + "c" * 64,
     "target": {"cluster": "example", "type": "guest", "id": "123"},
     "capability": "snapshot_guest",
     "parameters": {"snapshot": "approved"},
@@ -68,7 +69,7 @@ def test_missing_required_fields_are_named():
     errors = validate_approval_receipt({})
     assert errors == [f"missing required field: {field}" for field in (
         "receipt_version", "approval_request_id", "decision", "action_digest",
-        "target", "capability", "parameters", "issuer", "issued_at", "valid_until",
+        "contract_digest", "target", "capability", "parameters", "issuer", "issued_at", "valid_until",
         "audience", "receipt_id", "nonce", "signature",
     )]
 

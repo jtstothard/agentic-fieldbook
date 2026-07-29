@@ -185,7 +185,7 @@ def test_blocked_can_recover_to_planned():
     assert record.state is LifecycleState.PLANNED
 
 
-def test_failed_can_recover_to_planned():
+def test_failed_is_terminal_and_cannot_recover_to_planned():
     record = CanonicalTaskRecord.create(coding_contract(), task_id="task-8")
     record.transition(LifecycleState.PLANNED, actor="worker")
     record.transition(LifecycleState.APPROVED, actor="worker")
@@ -198,9 +198,10 @@ def test_failed_can_recover_to_planned():
     record.transition(LifecycleState.FAILED, actor="worker", reason="implementation failed")
     assert record.state is LifecycleState.FAILED
 
-    # Should be able to recover
-    record.transition(LifecycleState.PLANNED, actor="planner", reason="replanning")
-    assert record.state is LifecycleState.PLANNED
+    # FAILED is terminal. Recovery is represented by a new task/replan, not
+    # by mutating the failed record back into an executable state.
+    with pytest.raises(InvalidTransitionError):
+        record.transition(LifecycleState.PLANNED, actor="planner", reason="replanning")
 
 
 # Issue 3: SIDE-STATE GUARD OVER-PERMISSIVE
