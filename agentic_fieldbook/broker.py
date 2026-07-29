@@ -19,7 +19,7 @@ import hashlib
 import secrets
 import threading
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Mapping
@@ -61,7 +61,86 @@ class ReservationOutcome(str, Enum):
     AUDIT_UNAVAILABLE = "audit_unavailable"
 
 
-# Module-level aliases for convenient imports
+class LeaseState(str, Enum):
+    """Lifecycle of broker authority, distinct from capability success."""
+    ISSUED = "issued"
+    EXECUTING = "executing"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+    CONSUMED = "consumed"
+
+
+@dataclass(frozen=True)
+class Lease:
+    lease_id: str
+    receipt_id: str
+    action_digest: str
+    target: Mapping[str, Any]
+    capability: str
+    parameters: Mapping[str, Any]
+    issued_at: datetime
+    expires_at: datetime
+    operation_limit: int
+    operations_used: int = 0
+    state: LeaseState = LeaseState.ISSUED
+
+
+@dataclass(frozen=True)
+class AuditEvent:
+    event_type: str
+    timestamp: datetime
+    approval_request_id: str
+    receipt_id: str = ""
+    lease_id: str = ""
+    action_digest: str = ""
+    subject_ref: str = ""
+    reason: str = ""
+
+
+class LeaseAuthority:
+    """Append-only lease state seam with fail-closed expiry/revocation."""
+    def __init__(self) -> None:
+        self.leases: dict[str, Lease] = {}
+        self.audit_events: list[AuditEvent] = []
+        self._lock = threading.RLock()
+
+    def issue(self, lease: Lease) -> Lease:
+        with self._lock:
+            existing = self.leases.get(lease.lease_id)
+            if existing is not None:
+                return existing
+            self.leases[lease.lease_id] = lease
+            self.audit_events.append(AuditEvent("lease_issued", lease.issued_at, "",
+                                                lease.receipt_id, lease.lease_id,
+                                                lease.action_digest))
+            return lease
+
+    def revoke(self, lease_id: str, timestamp: datetime, reason: str) -> Lease:
+        with self._lock:
+            lease = self.leases[lease_id]
+            if lease.state not in {LeaseState.REVOKED, LeaseState.EXPIRED}:
+                lease = dataclass_replace(lease, state=LeaseState.REVOKED)
+                self.leases[lease_id] = lease
+                self.audit_events.append(AuditEvent("lease_revoked", timestamp, "",
+                                                    lease.receipt_id, lease_id,
+                                                    lease.action_digest, reason=reason))
+            return lease
+
+    def usable(self, lease_id: str, timestamp: datetime) -> bool:
+        with self._lock:
+            lease = self.leases[lease_id]
+            if timestamp >= lease.expires_at and lease.state not in {LeaseState.EXPIRED, LeaseState.REVOKED}:
+                lease = dataclass_replace(lease, state=LeaseState.EXPIRED)
+                self.leases[lease_id] = lease
+                self.audit_events.append(AuditEvent("lease_expired", timestamp, "",
+                                                    lease.receipt_id, lease_id,
+                                                    lease.action_digest))
+            return lease.state is LeaseState.ISSUED and lease.operations_used < lease.operation_limit
+
+    def recover(self) -> tuple[AuditEvent, ...]:
+        with self._lock:
+            return tuple(self.audit_events)
+
 VERIFIED = VerificationCategory.VERIFIED
 VERIFICATION_FAILED = VerificationCategory.VERIFICATION_FAILED
 INVALID_SIGNATURE = VerificationCategory.INVALID_SIGNATURE
@@ -89,6 +168,8 @@ class VerificationResult:
     category: VerificationCategory = VERIFICATION_FAILED
     reason: str = ""
     lease_id: str = ""
+    receipt_id: str = ""
+    action_digest: str = ""
 
 
 # ── Deployment-neutral interfaces ────────────────────────────────────────
@@ -184,6 +265,21 @@ class ApprovalStore(ABC):
         so a caller can safely retry after an ambiguous store response.
         """
         ...
+
+    def reserve_and_record_lease(self, receipt_id: str, nonce: str, request_id: str,
+                                 action_digest: str, target: Mapping[str, Any],
+                                 capability: str, parameters: Mapping[str, Any],
+                                 issued_at: datetime, expires_at: datetime,
+                                 operation_limit: int) -> ReservationOutcome | None:
+        """Optional richer atomic seam; None preserves Ticket 04 adapters."""
+        return None
+
+    def record_audit_event(self, event: AuditEvent) -> bool:
+        return True
+
+    def recover(self) -> tuple[AuditEvent, ...]:
+        """Replay audit state without reviving terminal authority."""
+        return ()
 
 
 class Clock(ABC):
@@ -439,7 +535,25 @@ def verify_approval_receipt(
     with _consume_lock:
         nonce = receipt["nonce"]
         receipt_id = receipt["receipt_id"]
-        reservation = store.reserve_and_record_verification(receipt_id, nonce, request_id, now)
+        operation_limit = contract.get("operation_limit", 1)
+        if type(operation_limit) is not int or operation_limit < 1:
+            return VerificationResult(False, VERIFICATION_FAILED, "operation limit is invalid")
+        ttl = contract.get("lease_ttl")
+        if ttl is not None and (type(ttl) is not int or ttl < 1):
+            return VerificationResult(False, VERIFICATION_FAILED, "lease TTL is invalid")
+        lease_expires_at = now + timedelta(seconds=ttl) if ttl is not None else valid_until
+        lease_id = hashlib.sha256(
+            f"{receipt_id}:{nonce}:{request_id}".encode("utf-8")
+        ).hexdigest()[:16]
+        reserve_lease = getattr(store, "reserve_and_record_lease", None)
+        used_richer_lease = callable(reserve_lease) and type(store).reserve_and_record_lease is not ApprovalStore.reserve_and_record_lease
+        reservation = (reserve_lease(
+            receipt_id, nonce, request_id, receipt["action_digest"], receipt["target"],
+            receipt["capability"], receipt["parameters"], now, lease_expires_at,
+            operation_limit,
+        ) if used_richer_lease and reserve_lease is not None else None)
+        if reservation is None:
+            reservation = store.reserve_and_record_verification(receipt_id, nonce, request_id, now)
         if reservation is not ReservationOutcome.RESERVED:
             return VerificationResult(
                 success=False,
@@ -449,17 +563,25 @@ def verify_approval_receipt(
                         if reservation is ReservationOutcome.AUDIT_UNAVAILABLE
                         else "replay detected"),
             )
+        audit = getattr(store, "record_audit_event", None)
+        if callable(audit):
+            try:
+                if audit(AuditEvent("lease_issued", now, request_id, receipt_id,
+                                    lease_id, receipt["action_digest"])) is False:
+                    return VerificationResult(False, STORE_UNAVAILABLE,
+                                              "failed to durably record lease event")
+            except Exception:
+                return VerificationResult(False, STORE_UNAVAILABLE,
+                                          "failed to durably record lease event")
 
-        # ── Issue lease ────────────────────────────────────────────────
-        lease_id = hashlib.sha256(
-            f"{receipt_id}:{nonce}:{request_id}".encode("utf-8")
-        ).hexdigest()[:16]
 
     return VerificationResult(
         success=True,
         category=VERIFIED,
         reason="receipt verified; lease issued",
         lease_id=lease_id,
+        receipt_id=receipt["receipt_id"],
+        action_digest=receipt["action_digest"],
     )
 
 
@@ -469,6 +591,10 @@ __all__ = [
     "VerificationCategory",
     "VerificationResult",
     "ReservationOutcome",
+    "LeaseState",
+    "Lease",
+    "AuditEvent",
+    "LeaseAuthority",
     "KeyStore",
     "ApproverPolicy",
     "ApprovalStore",
