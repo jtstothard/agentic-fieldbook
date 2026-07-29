@@ -59,13 +59,13 @@ def test_inline_limitations_are_explicit_not_fake_success():
     """Inline adapter limitations are explicit, not hidden behind fake success."""
     adapter = InlineAdapter()
 
-    # Idempotency: Inline records key but doesn't enforce it
-    first = adapter.dispatch("same task", assignee="worker", idempotency_key="same")
-    second = adapter.dispatch("same task", assignee="worker", idempotency_key="same")
+    # Idempotency is not part of the observed inline dispatch seam.
+    first = adapter.dispatch("same task", assignee="worker")
+    second = adapter.dispatch("same task", assignee="worker")
 
     assert first.success and second.success
     assert first.task_id is None and second.task_id is None
-    assert first.metadata["idempotency_key"] == "same"
+    assert "idempotency_key" not in first.metadata
 
     # Kanban-only operations are NOT present on Inline
     kanban_only = ("create", "claim", "poll", "read_result", "handle_failure")
@@ -86,7 +86,7 @@ def test_contract_documents_unsupported_dependency_semantics():
     contract = (ROOT / "docs" / "adapter-contract.md").read_text(encoding="utf-8")
     assert "Dependency Failure Recovery" in contract
     assert "Not directly tested in contrast matrix" in contract
-    assert "explicitly excluded" in contract.lower()
+    assert "out of contract scope" in contract.lower()
 
 
 def test_contract_documents_deterministic_recovery_boundaries():
@@ -99,14 +99,16 @@ def test_contract_documents_deterministic_recovery_boundaries():
         "Idempotency",
     ):
         assert phrase in contract
-    assert "must NOT define the method" in contract
+    assert "Optional operations are exposed only by capability protocols" in contract
 
 
 def test_contract_declares_capability_detection_required():
     """Contract requires capability detection before Kanban-only operations."""
     contract = (ROOT / "docs" / "adapter-contract.md").read_text(encoding="utf-8")
     assert "Capability Detection" in contract
-    assert "hasattr(adapter, 'claim')" in contract
+    assert "AdapterCapability.TASK_CREATION in capabilities and isinstance(adapter, TaskCreator)" in contract
+    assert "AdapterCapability.CLAIM_LIFECYCLE in capabilities" in contract
+    assert "isinstance(adapter, ClaimLifecycle)" in contract
     assert "Callers MUST verify the adapter supports them" in contract
 
 

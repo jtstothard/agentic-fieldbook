@@ -25,19 +25,23 @@ from agentic_fieldbook.adapter_contract import (
 class TestAdapterInterface:
     """Test that the DispatchAdapter interface is well-defined."""
 
-    def test_abstract_methods_exist(self):
-        """All abstract methods must be defined."""
+    def test_stable_methods_are_goal_dispatch_status_and_capabilities(self):
+        """The stable API dispatches a real goal; Kanban methods are optional."""
         abstract_methods = DispatchAdapter.__abstractmethods__
         expected_methods = {
-            "create_task",
-            "claim_task",
             "get_status",
-            "read_result",
             "dispatch",
-            "handle_failure",
             "get_capabilities",
         }
         assert abstract_methods == expected_methods
+
+    def test_dispatch_requires_non_empty_goal_and_assignee_is_keyword_only(self):
+        import inspect
+
+        signature = inspect.signature(DispatchAdapter.dispatch)
+        assert list(signature.parameters) == ["self", "goal", "assignee"]
+        assert signature.parameters["goal"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        assert signature.parameters["assignee"].kind is inspect.Parameter.KEYWORD_ONLY
 
     def test_return_types_are_dataclasses(self):
         """All operation results must be dataclasses with required fields."""
@@ -69,11 +73,9 @@ class TestAdapterInterface:
         assert result.metadata == {}
 
         # DispatchResult
-        result = DispatchResult(success=True, dispatched_count=1, reclaimed_count=0, anomalies=[], metadata={})
+        result = DispatchResult(success=True, task_id="t_123", metadata={}, message="")
         assert result.success is True
-        assert result.dispatched_count == 1
-        assert result.reclaimed_count == 0
-        assert result.anomalies == []
+        assert result.task_id == "t_123"
         assert result.metadata == {}
 
     def test_task_status_enum(self):
@@ -91,6 +93,7 @@ class TestAdapterInterface:
             "sync_dispatch",
             "async_dispatch",
             "task_id_persistence",
+            "task_creation",
             "result_persistence",
             "status_tracking",
             "claim_lifecycle",
@@ -140,16 +143,21 @@ class TestInlineAdapterContractCompliance:
         # From contrast evidence: inline does NOT support async, claims, persistence
         assert AdapterCapability.ASYNC_DISPATCH not in capabilities
         assert AdapterCapability.CLAIM_LIFECYCLE not in capabilities
+        assert AdapterCapability.TASK_CREATION not in capabilities
         assert AdapterCapability.TASK_ID_PERSISTENCE not in capabilities
         assert AdapterCapability.RESULT_PERSISTENCE not in capabilities
 
-    def test_inline_adapter_create_returns_none_task_id(self):
-        """InlineAdapterContract must return task_id=None for session-scoped execution."""
+    def test_inline_dispatch_returns_none_task_id(self):
         from agentic_fieldbook.inline_adapter_contract import InlineAdapterContract
 
-        adapter = InlineAdapterContract()
-        result = adapter.create_task(title="test", assignee="coder")
+        result = InlineAdapterContract().dispatch("test", assignee="coder")
         assert result.task_id is None
+
+    def test_inline_dispatch_rejects_empty_goal(self):
+        from agentic_fieldbook.inline_adapter_contract import InlineAdapterContract
+
+        with pytest.raises(ValueError, match="non-empty"):
+            InlineAdapterContract().dispatch("", assignee="coder")
 
     def test_inline_adapter_get_status_returns_synchronous(self):
         """InlineAdapterContract must return SYNCHRONOUS status."""
@@ -159,6 +167,11 @@ class TestInlineAdapterContractCompliance:
         status = adapter.get_status("ignored_task_id")
         assert status.status == TaskStatus.SYNCHRONOUS
 
+    def test_inline_contract_does_not_fake_unsupported_result_read(self):
+        from agentic_fieldbook.inline_adapter_contract import InlineAdapterContract
+
+        assert not hasattr(InlineAdapterContract(), "read_result")
+
 
 class TestContractAdditiveSuperset:
     """Test that the contract represents an additive superset of observed behavior."""
@@ -166,35 +179,21 @@ class TestContractAdditiveSuperset:
     def test_contract_covers_inline_lifecycle(self):
         """Contract must cover inline create/execute/status lifecycle."""
         # Inline lifecycle: create, status query (executes synchronously)
-        required_methods = {"create_task", "get_status", "dispatch", "read_result", "handle_failure", "claim_task", "get_capabilities"}
+        required_methods = {"get_status", "dispatch", "get_capabilities"}
         assert required_methods.issubset(DispatchAdapter.__abstractmethods__)
 
     def test_contract_covers_kanban_lifecycle(self):
         """Contract must cover Kanban create/claim/dispatch/result/failure lifecycle."""
         # Kanban lifecycle: create, claim, dispatch, poll (status), read_result, handle_failure
-        required_methods = {
-            "create_task",
-            "claim_task",
-            "dispatch",
-            "get_status",
-            "read_result",
-            "handle_failure",
-            "get_capabilities",
-        }
+        required_methods = {"dispatch", "get_status", "get_capabilities"}
         assert required_methods.issubset(DispatchAdapter.__abstractmethods__)
 
     def test_contract_covers_shared_parameters(self):
         """Contract must cover parameters observed in both adapters."""
-        # From contrast evidence: dry_run, idempotency_key, assignee
         import inspect
 
-        create_sig = inspect.signature(DispatchAdapter.create_task)
-        assert "dry_run" in create_sig.parameters
-        assert "idempotency_key" in create_sig.parameters
-        assert "assignee" in create_sig.parameters
-
         dispatch_sig = inspect.signature(DispatchAdapter.dispatch)
-        assert "dry_run" in dispatch_sig.parameters
+        assert list(dispatch_sig.parameters) == ["self", "goal", "assignee"]
 
 
 class TestContractFailureSemantics:
@@ -212,38 +211,8 @@ class TestContractFailureSemantics:
         """UnsupportedOperationError must be distinct."""
         assert issubclass(UnsupportedOperationError, RuntimeError)
 
-    def test_operations_may_raise_unsupported(self):
-        """Adapters may raise UnsupportedOperationError for unsupported features."""
-        import inspect
-
-        # Verify the contract allows raising UnsupportedOperationError
-        claim_sig = inspect.signature(DispatchAdapter.claim_task)
-        status_sig = inspect.signature(DispatchAdapter.get_status)
-        result_sig = inspect.signature(DispatchAdapter.read_result)
-        failure_sig = inspect.signature(DispatchAdapter.handle_failure)
-
-        # All these methods can raise UnsupportedOperationError according to docstrings
-        for sig in [claim_sig, status_sig, result_sig, failure_sig]:
-            # Just verify the signature allows exceptions (always true in Python)
-            assert True
-
-
 class TestContractDryRunSemantics:
     """Test that contract covers dry-run semantics from evidence."""
-
-    def test_create_task_accepts_dry_run(self):
-        """create_task must accept dry_run parameter."""
-        import inspect
-
-        sig = inspect.signature(DispatchAdapter.create_task)
-        assert "dry_run" in sig.parameters
-
-    def test_dispatch_accepts_dry_run(self):
-        """dispatch must accept dry_run parameter."""
-        import inspect
-
-        sig = inspect.signature(DispatchAdapter.dispatch)
-        assert "dry_run" in sig.parameters
 
     def test_dry_run_capability_is_optional(self):
         """Dry run enforcement is an optional capability."""
@@ -254,12 +223,6 @@ class TestContractDryRunSemantics:
 class TestContractIdempotencySemantics:
     """Test that contract covers idempotency semantics from evidence."""
 
-    def test_create_task_accepts_idempotency_key(self):
-        """create_task must accept idempotency_key parameter."""
-        import inspect
-
-        sig = inspect.signature(DispatchAdapter.create_task)
-        assert "idempotency_key" in sig.parameters
 
     def test_idempotency_capability_is_optional(self):
         """Idempotency enforcement is an optional capability."""
@@ -288,6 +251,7 @@ class TestContractCapabilityReporting:
             "sync_dispatch",
             "async_dispatch",
             "task_id_persistence",
+            "task_creation",
             "result_persistence",
             "status_tracking",
             "claim_lifecycle",

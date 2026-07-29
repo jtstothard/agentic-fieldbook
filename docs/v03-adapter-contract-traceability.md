@@ -1,7 +1,7 @@
 # v0.3.0 Adapter Contract Traceability
 
 This document traces every element of the v0.3.0 adapter contract to either:
-1. Direct empirical evidence from the inline/Kanban contrast matrix (commit 16268bb)
+1. Direct empirical evidence from the inline/Kanban contrast matrix (the final fix commit)
 2. Explicit exclusion when an adapter cannot support an operation
 
 **Contract files:**
@@ -19,10 +19,10 @@ This document traces every element of the v0.3.0 adapter contract to either:
 | Value | Evidence | Line |
 |-------|----------|------|
 | SYNCHRONOUS | Inline: Status is always 'synchronous' - no task state machine | docs/adapter-contrast-matrix.md:28-30 |
-| READY | Kanban: Task ready to be claimed | docs/adapter-contrast-matrix.md:47-48 |
-| RUNNING | Kanban: Task is currently executing | docs/adapter-contrast-matrix.md:47-48 |
-| DONE | Kanban: Task completed successfully | docs/adapter-contrast-matrix.md:47-48 |
-| BLOCKED | Kanban: Task blocked due to failure | docs/adapter-contrast-matrix.md:47-48 |
+| READY | Kanban: Task ready to be claimed | docs/adapter-contrast-matrix.md:52 |
+| RUNNING | Kanban: Task is currently executing | docs/adapter-contrast-matrix.md:52 |
+| DONE | Kanban: Task completed successfully | docs/adapter-contrast-matrix.md:52 |
+| BLOCKED | Kanban: Task blocked due to failure | docs/adapter-contrast-matrix.md:52 |
 
 **Rationale:** The contract covers all observed statuses. Inline only has SYNCHRONOUS; Kanban has the full lifecycle states.
 
@@ -30,35 +30,35 @@ This document traces every element of the v0.3.0 adapter contract to either:
 
 | Value | Evidence | Line |
 |-------|----------|------|
-| SYNC_DISPATCH | Inline: Synchronous execution - no asynchronous task backend | docs/adapter-contrast-matrix.md:29 |
-| ASYNC_DISPATCH | Kanban: Asynchronous task backend | docs/adapter-contrast-matrix.md:29 (contrast) |
-| TASK_ID_PERSISTENCE | Kanban: Task has persistent task_id and status | docs/adapter-contrast-matrix.md:48-49 |
-| RESULT_PERSISTENCE | Kanban: Results persist beyond task completion | docs/adapter-contrast-matrix.md:43-44 |
-| STATUS_TRACKING | Kanban: Status tracks actual task state (ready, running, done, blocked) | docs/adapter-contrast-matrix.md:47-48 |
-| CLAIM_LIFECYCLE | Kanban: Explicit claim operation with TTL-based ownership | docs/adapter-contrast-matrix.md:36-37 |
-| DRY_RUN_ENFORCEMENT | Kanban: dispatch() supports dry_run parameter | docs/adapter-contrast-matrix.md:50-51 |
-| IDEMPOTENCY_ENFORCEMENT | Kanban: Explicit idempotency required via idempotency_key | docs/adapter-contrast-matrix.md:42 |
-| CONCURRENT_CLAIM_DETECTION | Kanban: Concurrent claim race resolves to one winner | docs/adapter-contrast-matrix.md:35 |
-| STALE_CLAIM_RECOVERY | Kanban: Stale claims auto-recovered on dispatch | docs/adapter-contrast-matrix.md:46 |
-| FAILURE_STATE_MANAGEMENT | Kanban: Failed tasks transition to 'blocked' state for review | docs/adapter-contrast-matrix.md:40 |
+| SYNC_DISPATCH | Inline: Synchronous execution - no asynchronous task backend | docs/adapter-contrast-matrix.md:31 |
+| ASYNC_DISPATCH | Kanban: Asynchronous task backend | docs/adapter-contrast-matrix.md:31 (contrast) |
+| TASK_ID_PERSISTENCE | Kanban: Task has persistent task_id and status | docs/adapter-contrast-matrix.md:54 |
+| TASK_CREATION | Kanban: Optional create_task operation returns a new task | docs/adapter-contrast-matrix.md:41 |
+| RESULT_PERSISTENCE | Kanban: Results persist beyond task completion | docs/adapter-contrast-matrix.md:47 |
+| STATUS_TRACKING | Kanban: Status tracks actual task state (ready, running, done, blocked) | docs/adapter-contrast-matrix.md:52 |
+| CLAIM_LIFECYCLE | Kanban: Explicit claim operation with TTL-based ownership | docs/adapter-contrast-matrix.md:42 |
+| DRY_RUN_ENFORCEMENT | Kanban: dispatch() supports dry_run parameter | docs/adapter-contrast-matrix.md:55-56 |
+| IDEMPOTENCY_ENFORCEMENT | Kanban: Explicit idempotency required via idempotency_key | docs/adapter-contrast-matrix.md:46 |
+| CONCURRENT_CLAIM_DETECTION | Kanban: Concurrent claim race resolves to one winner | docs/adapter-contrast-matrix.md:38 |
+| STALE_CLAIM_RECOVERY | Kanban: Stale claims auto-recovered on dispatch | docs/adapter-contrast-matrix.md:51 |
+| FAILURE_STATE_MANAGEMENT | Kanban: Failed tasks transition to 'blocked' state for review | docs/adapter-contrast-matrix.md:44 |
 
 **Rationale:** Each capability maps to a specific observed behavior. Inline only supports SYNC_DISPATCH; Kanban supports all others.
 
-### Operation: create_task
+### Optional operation: create_task (Kanban capability)
 
 **Parameters:**
-- `title`: Task title (observed in KanbanAdapter.create())
-- `assignee`: Profile to assign (both adapters)
-- `context`: Additional context (both adapters)
-- `dry_run`: Preview without execution (Kanban enforces, inline records only) - docs/adapter-contrast-matrix.md:160
-- `idempotency_key`: Idempotency key (Kanban requires backend, inline records only) - docs/adapter-contrast-matrix.md:91
+- `title`: Task title (observed in the Kanban create_task capability)
+- `assignee`: Profile to assign (Kanban)
+- `context`: Additional context (Kanban)
+- `dry_run`: Preview without execution (Kanban enforces; not exposed by inline) - docs/adapter-contrast-matrix.md:55-56
+- `idempotency_key`: Kanban-only backend control; not exposed by the inline dispatch seam - docs/adapter-contrast-matrix.md:46
 
 **Inline behavior:**
-- Returns `task_id=None` (session-scoped) - docs/adapter-contrast-matrix.md:19
-- Returns `status=SYNCHRONOUS` (executes immediately)
+- Not defined; the inline adapter exposes only the shared `dispatch(goal, assignee)` seam.
 
 **Kanban behavior:**
-- Returns unique `task_id` - docs/adapter-contrast-matrix.md:38
+- Returns unique `task_id` - docs/adapter-contrast-matrix.md:41
 - Returns `status=READY` (ready to be claimed)
 
 ### Operation: claim_task
@@ -68,7 +68,7 @@ This document traces every element of the v0.3.0 adapter contract to either:
 - `ttl`: Time-to-live for the claim (observed in KanbanAdapter.claim())
 
 **Inline behavior:**
-- Raises `UnsupportedOperationError` (no claim lifecycle) - docs/adapter-contrast-matrix.md:188
+- Raises `UnsupportedOperationError` (no claim lifecycle) - docs/adapter-contrast-matrix.md:199
 
 **Kanban behavior:**
 - Returns `ClaimResult` with status after claiming
@@ -84,7 +84,7 @@ This document traces every element of the v0.3.0 adapter contract to either:
 - Ignores `task_id` parameter (session-scoped) - docs/adapter-contrast-matrix.md:31
 
 **Kanban behavior:**
-- Returns actual task state (ready, running, done, blocked) - docs/adapter-contrast-matrix.md:47-48
+- Returns actual task state (ready, running, done, blocked) - docs/adapter-contrast-matrix.md:52
 
 ### Operation: read_result
 
@@ -101,15 +101,16 @@ This document traces every element of the v0.3.0 adapter contract to either:
 ### Operation: dispatch
 
 **Parameters:**
-- `dry_run`: Preview without execution
+- `goal`: Task description or goal
+- `assignee`: Target profile (keyword-only)
 
 **Inline behavior:**
-- Synchronous execution (no async task backend) - docs/adapter-contrast-matrix.md:29
-- `dry_run` parameter recorded but not enforced
+- Synchronous execution (no async task backend) - docs/adapter-contrast-matrix.md:31
+- `dry_run`: Not exposed by the inline dispatch seam
 
 **Kanban behavior:**
-- Can run as dry_run without executing tasks - docs/adapter-contrast-matrix.md:167
-- Returns `DispatchResult` with execution statistics
+- Dispatches the goal through the Kanban adapter using the shared seam.
+- The separate Kanban board dispatcher has a `dry_run` mode (docs/adapter-contrast-matrix.md:55-56); that control is not part of this contract operation.
 
 ### Operation: handle_failure
 
@@ -127,7 +128,7 @@ This document traces every element of the v0.3.0 adapter contract to either:
 ### Operation: get_capabilities
 
 **Inline behavior:**
-- Returns empty set (no optional capabilities)
+- Returns `{AdapterCapability.SYNC_DISPATCH}`; no optional lifecycle capabilities
 
 **Kanban behavior:**
 - Returns set with all applicable capabilities
@@ -138,7 +139,7 @@ All result types are derived from observed return values:
 
 | Type | Evidence |
 |------|----------|
-| CreateResult | Observed in both adapters (inline: task_id=None, kanban: task_id assigned) |
+| CreateResult | Observed in the Kanban adapter; inline evidence covers synchronous dispatch, not task creation |
 | ClaimResult | Observed in KanbanAdapter.claim() |
 | StatusResult | Observed in both adapters (inline: SYNCHRONOUS, kanban: actual state) |
 | ResultResult | Observed in KanbanAdapter.read_result() |
@@ -167,8 +168,8 @@ The following operations are explicitly excluded for adapters that cannot suppor
 | result persistence | No durable result storage, results session-scoped | docs/adapter-contrast-matrix.md:145-147 |
 | task_id persistence | No persistent task ID across sessions | docs/adapter-contrast-matrix.md:19 |
 | status tracking | Status is always 'synchronous' - no state machine | docs/adapter-contrast-matrix.md:28-30 |
-| dry_run enforcement | Parameter recorded but not enforced | docs/adapter-contrast-matrix.md:159-162 |
-| idempotency enforcement | Parameter recorded but not enforced | docs/adapter-contrast-matrix.md:91 |
+| dry_run enforcement | Not exposed by the inline dispatch seam | docs/adapter-contrast-matrix.md:55-56 |
+| idempotency enforcement | Not exposed by the inline dispatch seam | docs/adapter-contrast-matrix.md:46 |
 | concurrent claim detection | No concurrent claim mechanism | docs/adapter-contrast-matrix.md:188-190 |
 | stale claim recovery | No claim lifecycle, so no stale claim recovery mechanism | docs/adapter-contrast-matrix.md:202-206 |
 
@@ -210,7 +211,7 @@ The contract is verified by:
 
 3. **Evidence preservation**
    - Contrast matrix preserved in `docs/adapter-contrast-matrix.md`
-   - Generated from commit 16268bb; final rerun artifact is `/tmp/adapter-contrast-v03-final.json` (9 scenarios × 2 adapters, 9/9 each)
+   - Generated from the final fix commit; final rerun artifact is `/tmp/adapter-contrast-v03-final.json` (9 scenarios × 2 adapters, 9/9 each)
 
 ## User-Facing Impact
 
@@ -219,4 +220,6 @@ Per the task requirements, the stable contract is **not exposed through user-fac
 - Clear documentation of adapter capabilities and limitations
 - A testable interface for adapter implementations
 
-The existing inline adapter (`agentic_fieldbook/dispatch.py`) remains unchanged for backward compatibility. The contract-compliant implementation is in `agentic_fieldbook/inline_adapter_contract.py`.
+The legacy inline adapter (`agentic_fieldbook/dispatch.py`) remains the narrow
+goal/assignee seam for backward compatibility. The contract-compliant
+implementation is in `agentic_fieldbook/inline_adapter_contract.py`.

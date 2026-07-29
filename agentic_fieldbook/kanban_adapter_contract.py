@@ -171,21 +171,21 @@ class KanbanAdapterContract(DispatchAdapter):
                 },
             )
 
-    def dispatch(self, *, dry_run: bool = False) -> DispatchResult:
-        """Dispatch tasks, recovering stale claims."""
-        report = self._adapter.dispatch(dry_run=dry_run)
-
+    def dispatch(self, goal: str, *, assignee: str | None) -> DispatchResult:
+        """Create a real goal for asynchronous Kanban execution."""
+        if not isinstance(goal, str) or not goal.strip():
+            raise ValueError("goal must be a non-empty string")
+        result = self.create_task(goal, assignee=assignee)
         return DispatchResult(
-            success=True,
-            dispatched_count=report.get("dispatched_count", 0),
-            reclaimed_count=report.get("reclaimed", 0),
-            anomalies=report.get("anomalies", []),
-            metadata={
-                "backend": "kanban",
-                "dry_run": dry_run,
-                "report": report,
-            },
+            success=result.success,
+            task_id=result.task_id,
+            metadata={"backend": "kanban", "assignee": assignee},
+            message="Task created for asynchronous dispatch",
         )
+
+    def dispatch_board(self, *, dry_run: bool = False) -> dict[str, Any]:
+        """Run the optional Kanban board dispatcher."""
+        return self._adapter.dispatch(dry_run=dry_run)
 
     def handle_failure(self, task_id: str, reason: str) -> dict[str, Any]:
         """Handle task failure by transitioning to BLOCKED state."""
@@ -207,6 +207,7 @@ class KanbanAdapterContract(DispatchAdapter):
         """Return full Kanban adapter capabilities."""
         return {
             AdapterCapability.TASK_ID_PERSISTENCE,
+            AdapterCapability.TASK_CREATION,
             AdapterCapability.ASYNC_DISPATCH,
             AdapterCapability.CLAIM_LIFECYCLE,
             AdapterCapability.STALE_CLAIM_RECOVERY,

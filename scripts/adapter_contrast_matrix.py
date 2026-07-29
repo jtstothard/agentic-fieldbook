@@ -103,8 +103,6 @@ class InlineAdapterRunner:
         result = self.adapter.dispatch(
             goal="test task",
             assignee="coder",
-            context="test context",
-            dry_run=False,
         )
         finished = time.monotonic()
         
@@ -144,7 +142,7 @@ class InlineAdapterRunner:
         
         return ScenarioOutcome(
             adapter="inline",
-            scenario="create_claim_poll",
+            scenario="claim_poll",
             started_at=now(),
             finished_at=now(),
             duration_seconds=round(finished - started, 3),
@@ -186,7 +184,6 @@ class InlineAdapterRunner:
             },
             differences=[
                 "Status is always 'synchronous' - no task state machine",
-                "task_id parameter is accepted but not used",
             ],
             limitations=[
                 "Cannot track task lifecycle states (ready, running, done, blocked)",
@@ -224,36 +221,7 @@ class InlineAdapterRunner:
             ],
         )
     
-    def scenario_dry_run(self) -> ScenarioOutcome:
-        started = time.monotonic()
-        result = self.adapter.dispatch(
-            goal="dry run test",
-            assignee="coder",
-            dry_run=True,
-        )
-        finished = time.monotonic()
-        
-        return ScenarioOutcome(
-            adapter="inline",
-            scenario="dry_run",
-            started_at=now(),
-            finished_at=now(),
-            duration_seconds=round(finished - started, 3),
-            success=result.success,
-            result={
-                "success": result.success,
-                "dry_run_recorded": result.metadata.get("dry_run", False),
-            },
-            differences=[
-                "dry_run parameter is recorded in metadata but not enforced",
-                "No side-effect prevention - inline path doesn't own execution policy",
-            ],
-            limitations=[
-                "No real dry-run enforcement - parameter is informational only",
-                "Cannot verify no mutations occurred",
-            ],
-        )
-    
+
     def scenario_repeated_invocation(self) -> ScenarioOutcome:
         started = time.monotonic()
         # Invoke the same goal twice - inline path executes both independently
@@ -280,7 +248,7 @@ class InlineAdapterRunner:
             },
             differences=[
                 "Each invocation is independent - no deduplication",
-                "No idempotency key enforcement (parameter recorded but not enforced)",
+                "No idempotency key enforcement (the inline API does not expose this control)",
             ],
             limitations=[
                 "Cannot prevent duplicate work",
@@ -394,6 +362,29 @@ class InlineAdapterRunner:
             ],
         )
 
+    def scenario_dry_run(self) -> ScenarioOutcome:
+        """Record that the inline seam does not expose a dry-run control."""
+        started = time.monotonic()
+        result = self.adapter.dispatch(goal="dry run test", assignee="coder")
+        finished = time.monotonic()
+        return ScenarioOutcome(
+            adapter="inline",
+            scenario="dry_run",
+            started_at=now(),
+            finished_at=now(),
+            duration_seconds=round(finished - started, 3),
+            success=result.success,
+            result={"success": result.success, "dry_run_recorded": False},
+            differences=[
+                "The inline API does not expose a dry_run control",
+                "No side-effect prevention - inline path does not own execution policy",
+            ],
+            limitations=[
+                "Cannot request a dry run through the inline seam",
+                "Cannot verify no mutations occurred",
+            ],
+        )
+
 
 class KanbanAdapterRunner:
     """Runner for Kanban adapter scenarios."""
@@ -445,7 +436,7 @@ class KanbanAdapterRunner:
         
         return ScenarioOutcome(
             adapter="kanban",
-            scenario="create_claim_poll",
+            scenario="claim_poll",
             started_at=now(),
             finished_at=now(),
             duration_seconds=round(finished - started, 3),
@@ -699,7 +690,7 @@ def run_matrix(tmp_path: Path) -> ContrastReport:
     inline_runner = InlineAdapterRunner()
     inline_scenarios = [
         "create_dispatch",
-        "create_claim_poll",
+        "claim_poll",
         "status_check",
         "result_read",
         "dry_run",
