@@ -12,6 +12,8 @@ from typing import Any, Mapping
 
 import yaml
 
+from .contract import _strict_equal, _valid_target_identity
+
 
 APPROVAL_RECEIPT_REQUIRED_FIELDS = (
     "receipt_version", "approval_request_id", "decision", "action_digest",
@@ -25,41 +27,43 @@ SIGNER_REQUIRED_FIELDS = ("subject", "decision", "timestamp")
 SIGNATURE_REQUIRED_FIELDS = ("algorithm", "key_id", "value")
 
 
-def _valid_target_identity(value: Any) -> bool:
-    """Accept only concrete, non-empty target identity values.
+class DuplicateKeyLoader(yaml.SafeLoader):
+    """SafeLoader subclass that rejects duplicate mapping keys.
 
-    Mirrors contract.py implementation for consistency.
+    PyYAML's default safe_load silently keeps the last value for a duplicate
+    key, which is unsafe in an authorization context: a tampered or malformed
+    receipt YAML could silently swap field values without any validation error.
+    This loader makes duplicate keys a hard parse error.
     """
-    if value is None or isinstance(value, bool):
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if type(value) is int:
-        return value >= 1
-    if isinstance(value, Mapping):
-        return bool(value) and all(
-            isinstance(key, str) and key.strip() and _valid_target_identity(member)
-            for key, member in value.items()
-        )
-    return False
 
 
-def _strict_equal(left: Any, right: Any) -> bool:
-    """Compare YAML values without Python's bool/int equality coercion.
+def _no_duplicates_constructor(loader, node, deep=False):
+    """Mapping constructor that fails on duplicate keys."""
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                None, None,
+                f"duplicate key {key!r} found in mapping",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
 
-    Mirrors contract.py implementation for consistency.
+
+DuplicateKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _no_duplicates_constructor,
+)
+
+
+def loads_receipt(text: str) -> Any:
+    """Parse YAML receipt text, rejecting duplicate mapping keys.
+
+    Raises yaml.YAMLError on any parse error including duplicate keys.
     """
-    if type(left) is not type(right):
-        return False
-    if isinstance(left, Mapping):
-        if left.keys() != right.keys():
-            return False
-        return all(_strict_equal(left[key], right[key]) for key in left)
-    if isinstance(left, list):
-        return len(left) == len(right) and all(
-            _strict_equal(item, other) for item, other in zip(left, right)
-        )
-    return left == right
+    return yaml.load(text, Loader=DuplicateKeyLoader)
 
 
 def canonicalize(value: Any) -> str:
@@ -317,7 +321,7 @@ def check_approval_receipt(path: str) -> int:
     """
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+            data = loads_receipt(f.read())
     except (OSError, yaml.YAMLError) as exc:
         print(f"ERROR: cannot load approval receipt {path}: {exc}", file=sys.stderr)
         return 1

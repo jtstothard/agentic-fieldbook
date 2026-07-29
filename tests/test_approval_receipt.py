@@ -377,6 +377,33 @@ def test_receipt_command_accepts_valid_receipt(tmp_path: Path, capsys):
     assert "Approval receipt valid" in capsys.readouterr().out
 
 
+# === Duplicate-key rejection tests ===
+
+
+def test_duplicate_top_level_key_is_rejected(tmp_path: Path, capsys):
+    """Duplicate mapping keys in YAML are a hard parse error, not silent last-wins."""
+    dup_yaml = (
+        f'receipt_version: "1"\n'
+        f'receipt_version: "2"\n'
+    )
+    path = tmp_path / "dup.yaml"
+    path.write_text(dup_yaml)
+    assert check_approval_receipt(str(path)) == 1
+    err = capsys.readouterr().err
+    assert "duplicate key" in err
+
+
+def test_duplicate_field_value_is_not_silently_selected(tmp_path: Path, capsys):
+    """A duplicate 'decision' key must fail closed, not silently keep the last value."""
+    dup_yaml = yaml.safe_dump({**VALID, "decision": "approved"}, sort_keys=False)
+    dup_yaml += f'decision: "rejected"\n'
+    path = tmp_path / "dup_decision.yaml"
+    path.write_text(dup_yaml)
+    assert check_approval_receipt(str(path)) == 1
+    err = capsys.readouterr().err
+    assert "duplicate key" in err
+
+
 # === Combined validation tests ===
 
 
