@@ -1,10 +1,119 @@
 """Contract command for discovering test runner commands in workspaces."""
 
 import os
+import re
 import sys
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Mapping, Optional
+
+import yaml
+
+
+CAPABILITY_APPROVAL_REQUIRED_FIELDS = (
+    "broker_type", "broker_endpoint", "lease_ttl", "operation_limit",
+    "contract_digest", "verification_method", "target_immutable",
+    "approval_channel", "target", "capability", "parameters",
+    "approval_binding",
+)
+
+
+def _valid_target_identity(value: Any) -> bool:
+    """Accept only concrete, non-empty target identity values."""
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if type(value) is int:
+        return value >= 1
+    if isinstance(value, Mapping):
+        return bool(value) and all(
+            isinstance(key, str) and key.strip() and _valid_target_identity(member)
+            for key, member in value.items()
+        )
+    return False
+
+
+def _strict_equal(left: Any, right: Any) -> bool:
+    """Compare YAML values without Python's bool/int equality coercion."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, Mapping):
+        if left.keys() != right.keys():
+            return False
+        return all(_strict_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _strict_equal(item, other) for item, other in zip(left, right)
+        )
+    return left == right
+
+
+def validate_capability_approval(contract: Mapping[str, Any]) -> list[str]:
+    """Return deterministic validation errors for a capability-approval contract.
+
+    The domain YAML is a descriptive template; this function validates actual
+    runtime contract data and therefore never treats its example defaults as
+    proof that a contract is safe.
+    """
+    errors: list[str] = []
+    for field in CAPABILITY_APPROVAL_REQUIRED_FIELDS:
+        if field not in contract or contract[field] is None or contract[field] == "":
+            errors.append(f"missing required field: {field}")
+
+    if "lease_ttl" in contract:
+        if type(contract["lease_ttl"]) is not int or contract["lease_ttl"] < 1:
+            errors.append("lease_ttl must be an integer >= 1")
+    if "operation_limit" in contract:
+        if type(contract["operation_limit"]) is not int or contract["operation_limit"] < 1:
+            errors.append("operation_limit must be an integer >= 1")
+    if "target_immutable" in contract and contract["target_immutable"] is not True:
+        errors.append("target_immutable must be true for capability-approval contracts")
+
+    for field in ("broker_type", "broker_endpoint", "verification_method", "approval_channel",
+                  "capability"):
+        if field in contract and (not isinstance(contract[field], str) or not contract[field].strip()):
+            errors.append(f"{field} must be a non-empty string")
+    if "target" in contract and not _valid_target_identity(contract["target"]):
+        errors.append("target must contain non-empty identity values")
+    digest = contract.get("contract_digest")
+    if "contract_digest" in contract and (
+            not isinstance(digest, str) or
+            not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)):
+        errors.append("contract_digest must be a sha256:<64 hex characters> digest")
+    if "parameters" in contract and not isinstance(contract["parameters"], Mapping):
+        errors.append("parameters must be a mapping")
+
+    binding = contract.get("approval_binding")
+    if "approval_binding" in contract and not isinstance(binding, Mapping):
+        errors.append("approval_binding must map contract_digest, target, capability, and parameters")
+    elif isinstance(binding, Mapping):
+        for field in ("contract_digest", "target", "capability", "parameters"):
+            if field not in binding:
+                errors.append(f"approval_binding missing field: {field}")
+            elif field in contract and not _strict_equal(binding[field], contract[field]):
+                errors.append(f"approval_binding mismatch: {field}")
+    return errors
+
+
+def check_capability_approval(path: str) -> int:
+    """Validate a YAML capability-approval contract and print named failures."""
+    contract_path = Path(path)
+    try:
+        data = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        print(f"ERROR: cannot load capability-approval contract {path}: {exc}", file=sys.stderr)
+        return 1
+    if not isinstance(data, dict):
+        print("ERROR: capability-approval contract must be a YAML mapping", file=sys.stderr)
+        return 1
+    errors = validate_capability_approval(data)
+    if errors:
+        for error in errors:
+            print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    print(f"Capability-approval contract valid: {path}")
+    return 0
 
 
 def _get_git_common_dir(workspace: Path) -> Optional[Path]:

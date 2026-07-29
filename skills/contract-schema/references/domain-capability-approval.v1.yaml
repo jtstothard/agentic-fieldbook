@@ -1,0 +1,33 @@
+# Domain Extension: capability-approval.v1
+# Adds fields for capability-approval tasks (leases, brokers, verification).
+# Never weakens the universal core — only adds requirements.
+#
+# This domain encodes protocol patterns validated by a capability-approval pilot:
+# - Contract-digest binding (leases are bound to exact contract revisions)
+# - Broker-backed lease lifecycle (issued → executing → verified → consumed)
+# - Independent verification (verifier queries target directly, never via worker)
+# - Fail-closed semantics (no lease under degraded conditions, broker unavailable = 503)
+# - Replay protection (one-time operation_id, budget-exceeded on replay)
+#
+# See references/capability-approval-limitations.md for known pilot limitations.
+
+broker_type: ""          # REQUIRED. Type of external broker (e.g. "vault", "bespoke").
+broker_endpoint: ""      # REQUIRED. Broker API endpoint for the deployment.
+lease_ttl: 0             # REQUIRED. Maximum lease lifetime in seconds.
+operation_limit: 1       # REQUIRED. Maximum operations per lease (budget). Must be ≥1.
+contract_digest: ""      # REQUIRED. SHA-256 of normalized contract fields, computed by broker.
+                         # Binding is immutable once issued. Any material change invalidates digest.
+verification_method: ""  # REQUIRED. How the independent verifier checks results.
+                         # Verifier must query the target directly.
+target_immutable: true   # REQUIRED. Whether the target is locked to exact VMID/container ID.
+                         # Must be true for capability-approval (cannot be overridden to false).
+approval_channel: ""     # REQUIRED. Channel through which human approval was obtained
+                         # (e.g. "telegram", "cli").
+target: {}               # REQUIRED. Immutable target identity used by the operation.
+capability: ""           # REQUIRED. Exact capability/operation being approved.
+parameters: {}           # REQUIRED. Exact operation parameters being approved.
+approval_binding:         # REQUIRED. Structured binding; every value must match the fields above.
+  contract_digest: ""
+  target: {}
+  capability: ""
+  parameters: {}
