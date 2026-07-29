@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
+import threading
 from typing import Any, cast
 
 from agentic_fieldbook.broker import (
-    AuditEvent, Lease, LeaseAuthority, LeaseState,
+    AuditEvent, Lease, LeaseAuthority, LeaseState, OperationOutcome,
 )
 
 
@@ -64,3 +65,43 @@ def test_repeated_issue_does_not_duplicate_authorization_or_audit():
     second = authority.issue(make_lease())
     assert first == second
     assert len(authority.recover()) == 1
+
+
+def test_operation_budget_is_atomic_idempotent_and_lifecycle_bound():
+    authority = LeaseAuthority()
+    authority.issue(make_lease(operation_limit=2))
+    assert authority.reserve_operation("lease-1", "op-1", NOW) is OperationOutcome.RESERVED
+    assert authority.leases["lease-1"].state is LeaseState.EXECUTING
+    assert authority.reserve_operation("lease-1", "op-1", NOW) is OperationOutcome.REPLAY
+    assert authority.consume_operation("lease-1", "op-1", NOW) is OperationOutcome.CONSUMED
+    assert authority.leases["lease-1"].state is LeaseState.ISSUED
+    assert authority.reserve_operation("lease-1", "op-2", NOW) is OperationOutcome.RESERVED
+    assert authority.consume_operation("lease-1", "op-2", NOW) is OperationOutcome.CONSUMED
+    assert authority.leases["lease-1"].state is LeaseState.CONSUMED
+    assert authority.reserve_operation("lease-1", "op-3", NOW) is OperationOutcome.UNAVAILABLE
+
+
+def test_operation_reservation_rejects_expired_lease():
+    authority = LeaseAuthority()
+    authority.issue(make_lease(expires_at=NOW + timedelta(seconds=1)))
+    assert authority.reserve_operation("lease-1", "op-1", NOW + timedelta(seconds=2)) is OperationOutcome.UNAVAILABLE
+    assert authority.leases["lease-1"].state is LeaseState.EXPIRED
+
+
+def test_concurrent_operation_reservations_cannot_exceed_budget():
+    authority = LeaseAuthority()
+    authority.issue(make_lease(operation_limit=1))
+    outcomes = []
+    barrier = threading.Barrier(8)
+
+    def reserve(index):
+        barrier.wait()
+        outcomes.append(authority.reserve_operation("lease-1", f"op-{index}", NOW))
+
+    threads = [threading.Thread(target=reserve, args=(index,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert outcomes.count(OperationOutcome.RESERVED) == 1
+    assert authority.leases["lease-1"].operations_used == 1

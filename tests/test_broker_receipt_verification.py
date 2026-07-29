@@ -171,6 +171,23 @@ class FakeApprovalStore(ApprovalStore):
         self.verification_events.append((receipt_id, timestamp))
         return ReservationOutcome.RESERVED
 
+    def reserve_and_record_lease(self, receipt_id, nonce, request_id, action_digest,
+                                 target, capability, parameters, issued_at,
+                                 expires_at, operation_limit):
+        if not self.available or getattr(self, "fail_audit", False):
+            return ReservationOutcome.AUDIT_UNAVAILABLE
+        if (nonce in self.consumed_nonces or receipt_id in self.consumed_receipt_ids
+                or request_id in self.consumed_request_ids):
+            return ReservationOutcome.REPLAY
+        self.consumed_nonces.add(nonce)
+        self.consumed_receipt_ids.add(receipt_id)
+        self.consumed_request_ids.add(request_id)
+        self.verification_events = getattr(self, "verification_events", [])
+        self.verification_events.append((receipt_id, issued_at))
+        self.lease_events = getattr(self, "lease_events", [])
+        self.lease_events.append((receipt_id, receipt_id, action_digest))
+        return ReservationOutcome.RESERVED
+
 class FakeClock(Clock):
     """Fake clock for testing."""
 

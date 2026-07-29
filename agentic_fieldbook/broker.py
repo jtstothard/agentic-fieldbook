@@ -57,8 +57,16 @@ class VerificationCategory(str, Enum):
 
 class ReservationOutcome(str, Enum):
     RESERVED = "reserved"
+    COMMITTED = "committed"
     REPLAY = "replay"
     AUDIT_UNAVAILABLE = "audit_unavailable"
+
+
+class OperationOutcome(str, Enum):
+    RESERVED = "reserved"
+    REPLAY = "replay"
+    UNAVAILABLE = "unavailable"
+    CONSUMED = "consumed"
 
 
 class LeaseState(str, Enum):
@@ -102,6 +110,7 @@ class LeaseAuthority:
     def __init__(self) -> None:
         self.leases: dict[str, Lease] = {}
         self.audit_events: list[AuditEvent] = []
+        self.operations: dict[str, tuple[str, str]] = {}
         self._lock = threading.RLock()
 
     def issue(self, lease: Lease) -> Lease:
@@ -109,10 +118,17 @@ class LeaseAuthority:
             existing = self.leases.get(lease.lease_id)
             if existing is not None:
                 return existing
-            self.leases[lease.lease_id] = lease
-            self.audit_events.append(AuditEvent("lease_issued", lease.issued_at, "",
-                                                lease.receipt_id, lease.lease_id,
-                                                lease.action_digest))
+            event = AuditEvent("lease_issued", lease.issued_at, "",
+                               lease.receipt_id, lease.lease_id,
+                               lease.action_digest)
+            # Commit the durable evidence before exposing the authority. If the
+            # audit sink fails, no lease is left behind to strand authorization.
+            self.audit_events.append(event)
+            try:
+                self.leases[lease.lease_id] = lease
+            except Exception:
+                self.audit_events.pop()
+                raise
             return lease
 
     def revoke(self, lease_id: str, timestamp: datetime, reason: str) -> Lease:
@@ -136,6 +152,43 @@ class LeaseAuthority:
                                                     lease.receipt_id, lease_id,
                                                     lease.action_digest))
             return lease.state is LeaseState.ISSUED and lease.operations_used < lease.operation_limit
+
+    def reserve_operation(self, lease_id: str, operation_id: str,
+                          timestamp: datetime) -> OperationOutcome:
+        """Atomically reserve one operation, before the capability call."""
+        with self._lock:
+            if operation_id in self.operations:
+                return OperationOutcome.REPLAY
+            lease = self.leases[lease_id]
+            if timestamp >= lease.expires_at:
+                if lease.state is LeaseState.ISSUED:
+                    self.leases[lease_id] = dataclass_replace(lease, state=LeaseState.EXPIRED)
+                return OperationOutcome.UNAVAILABLE
+            if lease.state is not LeaseState.ISSUED or lease.operations_used >= lease.operation_limit:
+                return OperationOutcome.UNAVAILABLE
+            self.leases[lease_id] = dataclass_replace(
+                lease, state=LeaseState.EXECUTING, operations_used=lease.operations_used + 1
+            )
+            self.operations[operation_id] = (lease_id, LeaseState.EXECUTING.value)
+            return OperationOutcome.RESERVED
+
+    def consume_operation(self, lease_id: str, operation_id: str,
+                          timestamp: datetime) -> OperationOutcome:
+        """Atomically finish a reserved operation and consume its lease budget."""
+        with self._lock:
+            record = self.operations.get(operation_id)
+            if record != (lease_id, LeaseState.EXECUTING.value):
+                return OperationOutcome.REPLAY if record else OperationOutcome.UNAVAILABLE
+            lease = self.leases[lease_id]
+            next_state = (LeaseState.CONSUMED
+                          if lease.operations_used >= lease.operation_limit
+                          else LeaseState.ISSUED)
+            self.operations[operation_id] = (lease_id, LeaseState.CONSUMED.value)
+            self.leases[lease_id] = dataclass_replace(lease, state=next_state)
+            self.audit_events.append(AuditEvent("operation_consumed", timestamp, "",
+                                                lease.receipt_id, lease_id,
+                                                lease.action_digest))
+            return OperationOutcome.CONSUMED
 
     def recover(self) -> tuple[AuditEvent, ...]:
         with self._lock:
@@ -270,16 +323,24 @@ class ApprovalStore(ABC):
                                  action_digest: str, target: Mapping[str, Any],
                                  capability: str, parameters: Mapping[str, Any],
                                  issued_at: datetime, expires_at: datetime,
-                                 operation_limit: int) -> ReservationOutcome | None:
-        """Optional richer atomic seam; None preserves Ticket 04 adapters."""
-        return None
+                                 operation_limit: int) -> ReservationOutcome:
+        """Atomically commit replay, verification, lease, and lease audit."""
+        raise NotImplementedError("durable atomic lease commit is required")
 
     def record_audit_event(self, event: AuditEvent) -> bool:
-        return True
+        raise NotImplementedError("durable audit is required")
 
     def recover(self) -> tuple[AuditEvent, ...]:
         """Replay audit state without reviving terminal authority."""
-        return ()
+        raise NotImplementedError("durable recovery is required")
+
+    def reserve_operation(self, lease_id: str, operation_id: str,
+                          timestamp: datetime) -> OperationOutcome:
+        raise NotImplementedError("atomic operation reservation is required")
+
+    def consume_operation(self, lease_id: str, operation_id: str,
+                          timestamp: datetime) -> OperationOutcome:
+        raise NotImplementedError("atomic operation consumption is required")
 
 
 class Clock(ABC):
@@ -546,15 +607,20 @@ def verify_approval_receipt(
             f"{receipt_id}:{nonce}:{request_id}".encode("utf-8")
         ).hexdigest()[:16]
         reserve_lease = getattr(store, "reserve_and_record_lease", None)
-        used_richer_lease = callable(reserve_lease) and type(store).reserve_and_record_lease is not ApprovalStore.reserve_and_record_lease
-        reservation = (reserve_lease(
-            receipt_id, nonce, request_id, receipt["action_digest"], receipt["target"],
-            receipt["capability"], receipt["parameters"], now, lease_expires_at,
-            operation_limit,
-        ) if used_richer_lease and reserve_lease is not None else None)
-        if reservation is None:
-            reservation = store.reserve_and_record_verification(receipt_id, nonce, request_id, now)
-        if reservation is not ReservationOutcome.RESERVED:
+        if (not callable(reserve_lease)
+                or type(store).reserve_and_record_lease is ApprovalStore.reserve_and_record_lease):
+            return VerificationResult(False, STORE_UNAVAILABLE,
+                                      "durable atomic lease commit is unsupported")
+        try:
+            reservation = reserve_lease(
+                receipt_id, nonce, request_id, receipt["action_digest"], receipt["target"],
+                receipt["capability"], receipt["parameters"], now, lease_expires_at,
+                operation_limit,
+            )
+        except (NotImplementedError, TypeError, OSError):
+            return VerificationResult(False, STORE_UNAVAILABLE,
+                                      "durable atomic lease commit failed")
+        if reservation not in (ReservationOutcome.RESERVED, ReservationOutcome.COMMITTED):
             return VerificationResult(
                 success=False,
                 category=(STORE_UNAVAILABLE if reservation is ReservationOutcome.AUDIT_UNAVAILABLE
@@ -563,18 +629,6 @@ def verify_approval_receipt(
                         if reservation is ReservationOutcome.AUDIT_UNAVAILABLE
                         else "replay detected"),
             )
-        audit = getattr(store, "record_audit_event", None)
-        if callable(audit):
-            try:
-                if audit(AuditEvent("lease_issued", now, request_id, receipt_id,
-                                    lease_id, receipt["action_digest"])) is False:
-                    return VerificationResult(False, STORE_UNAVAILABLE,
-                                              "failed to durably record lease event")
-            except Exception:
-                return VerificationResult(False, STORE_UNAVAILABLE,
-                                          "failed to durably record lease event")
-
-
     return VerificationResult(
         success=True,
         category=VERIFIED,
@@ -591,6 +645,7 @@ __all__ = [
     "VerificationCategory",
     "VerificationResult",
     "ReservationOutcome",
+    "OperationOutcome",
     "LeaseState",
     "Lease",
     "AuditEvent",
