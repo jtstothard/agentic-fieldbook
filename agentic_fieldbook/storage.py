@@ -145,6 +145,12 @@ class PortableTaskStore:
             except (json.JSONDecodeError, OSError) as exc:
                 raise CorruptedRecordError(f"Corrupted record file for task {task_id}: {exc}") from exc
 
+            if not isinstance(data, dict):
+                raise CorruptedRecordError(
+                    f"Corrupted record file {target_file}: "
+                    f"expected JSON object root, got {type(data).__name__}"
+                )
+
             schema = data.get("schema")
             if schema is None:
                 raise SchemaVersionError(f"Record {task_id} missing schema version")
@@ -154,7 +160,12 @@ class PortableTaskStore:
                     f"Supported: {SUPPORTED_SCHEMA_VERSION}"
                 )
 
-            record = CanonicalTaskRecord.from_dict(data)
+            try:
+                record = CanonicalTaskRecord.from_dict(data)
+            except (AttributeError, TypeError, KeyError) as exc:
+                raise CorruptedRecordError(
+                    f"Corrupted record file {target_file}: invalid record structure: {exc}"
+                ) from exc
             if "provenance" in data:
                 setattr(record, "_provenance", data["provenance"])
             return record

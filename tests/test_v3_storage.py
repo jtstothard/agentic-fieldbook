@@ -331,6 +331,48 @@ class TestSchemaVersioning:
 class TestCorruptionDetection:
     """Test corruption detection and handling."""
 
+    @pytest.mark.parametrize(
+        ("task_id", "payload", "root_type"),
+        [
+            ("task-array", [], "list"),
+            ("task-null", None, "NoneType"),
+            ("task-scalar", 1, "int"),
+        ],
+    )
+    def test_load_rejects_valid_json_with_non_mapping_root(
+        self, temp_dir: Path, task_id: str, payload, root_type: str
+    ) -> None:
+        """A JSON document must have an object root to be a task record."""
+        store = PortableTaskStore(base_dir=temp_dir)
+        (temp_dir / "tasks" / f"{task_id}.json").write_text(json.dumps(payload))
+
+        with pytest.raises(CorruptedRecordError, match=rf"{task_id}.*{root_type}"):
+            store.load(task_id)
+
+    def test_list_skips_and_reports_all_non_mapping_json_roots(self, temp_dir: Path) -> None:
+        """List should report every valid-JSON file with an invalid root type."""
+        store = PortableTaskStore(base_dir=temp_dir)
+        payloads = {"task-array": [], "task-null": None, "task-scalar": 1}
+        for task_id, payload in payloads.items():
+            (temp_dir / "tasks" / f"{task_id}.json").write_text(json.dumps(payload))
+
+        seen = []
+        assert store.list(on_error=lambda path, error: seen.append((path, error))) == []
+        assert {path.stem for path, _ in seen} == set(payloads)
+        assert all(isinstance(error, CorruptedRecordError) for _, error in seen)
+        assert {path.stem for path, _ in store.diagnostics} == set(payloads)
+
+    def test_load_normalizes_invalid_record_structure(self, temp_dir: Path) -> None:
+        """A mapping with a valid schema but missing fields is still corruption."""
+        store = PortableTaskStore(base_dir=temp_dir)
+        task_id = "task-missing-fields"
+        (temp_dir / "tasks" / f"{task_id}.json").write_text(
+            json.dumps({"schema": "fieldbook.task-record.v1"})
+        )
+
+        with pytest.raises(CorruptedRecordError, match=task_id):
+            store.load(task_id)
+
     def test_reports_corrupted_json_files(self, temp_dir: Path) -> None:
         """Store should report corrupted JSON files without crashing."""
         store = PortableTaskStore(base_dir=temp_dir)
