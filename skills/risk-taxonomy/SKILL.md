@@ -26,6 +26,8 @@ Regardless of class, these actions **always** require explicit human approval:
 
 These cannot be downgraded. Even if classified Low, if an always-ask action applies, human approval is required.
 
+**Capability-approval tasks** are **High-risk and always-ask** — the approval step itself is a human gate required before any capability can be leased or used. See the contract-schema skill for the capability-approval domain extension and independent verification rules.
+
 ## Effective risk calculation
 
 Effective risk is the **maximum** across these dimensions:

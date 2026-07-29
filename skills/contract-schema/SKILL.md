@@ -34,6 +34,11 @@ Load these with `skill_view(name='contract-schema', file_path=...)`:
 | `references/domain-research.v1.yaml` | Research domain extension (sources, citations, freshness) |
 | `references/domain-ops.v1.yaml` | Ops domain extension (host, backup, rollback, health probes) |
 | `references/domain-automation.v1.yaml` | Automation domain extension (canary, idempotency, abort) |
+| `references/domain-capability-approval.v1.yaml` | Capability-approval domain extension (leases, brokers, verification) |
+| `references/capability-approval-lifecycle.md` | Canonical capability-approval lease states, transitions, and failure recovery |
+| `references/independent-verification.md` | Independent verification rules for capability-approval tasks |
+| `references/async-task-completion.md` | Generic async task-completion pattern with anti-pattern warning |
+| `references/capability-approval-limitations.md` | Capability-approval limitations and known caveats |
 | `references/contract-template.md` | Markdown presentation template for human-readable contracts |
 | `references/versioning-rules.md` | Immutable core, append-only stages, material-change revision rules |
 | `references/example-contract-coding.yaml` | Worked example: a coding task contract |
@@ -48,7 +53,12 @@ Use this table to choose the right domain extension for your task:
 | Research, literature review, data gathering, analysis, synthesis | `domain-research.v1.yaml` |
 | Deployments, infrastructure changes, migrations, service configuration | `domain-ops.v1.yaml` |
 | Pipelines, workflows, cron jobs, alerts, webhooks, automation systems | `domain-automation.v1.yaml` |
+| Capability-approval tasks (leases, brokers, independent verification) | `domain-capability-approval.v1.yaml` |
 | Multi-domain (e.g., code + deployment) | Combine multiple extensions; add all relevant fields |
+
+**Note for capability-approval tasks**: Use the `domain-capability-approval.v1.yaml` extension which includes the full lease/broker/verification schema and independent verification rules. See `references/independent-verification.md`, `references/async-task-completion.md`, and `references/capability-approval-limitations.md` for detailed guidance.
+
+The YAML extension's defaults and comments are descriptive documentation, not runtime validation. Validate actual capability-approval contracts through the Fieldbook contract seam (`hermes aos contract --capability-approval <path>`); validation requires all extension fields, `operation_limit >= 1`, and `target_immutable: true`.
 
 If none apply, the universal core alone is sufficient for generic task tracking.
 
