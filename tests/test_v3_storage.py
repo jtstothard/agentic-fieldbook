@@ -15,6 +15,7 @@ from agentic_fieldbook.lifecycle import (
 )
 from agentic_fieldbook.storage import (
     CorruptedRecordError,
+    InvalidTaskIDError,
     PortableTaskStore,
     SchemaVersionError,
     UnknownSchemaVersionError,
@@ -370,6 +371,34 @@ class TestCorruptionDetection:
         temp_files = list((temp_dir / "tasks").glob(temp_pattern))
         # In normal operation, no temp files should exist after successful save
         assert len(temp_files) == 0
+
+
+    def test_rejects_path_traversal_ids_before_filesystem_access(self, temp_dir: Path, sample_record: CanonicalTaskRecord) -> None:
+        store = PortableTaskStore(base_dir=temp_dir)
+        sample_record.task_id = "../escape"
+        with pytest.raises(InvalidTaskIDError):
+            store.save(sample_record)
+        with pytest.raises(InvalidTaskIDError):
+            store.load("../escape")
+        assert not (temp_dir / "escape.json").exists()
+
+    def test_list_reports_corruption_without_crashing(self, temp_dir: Path) -> None:
+        store = PortableTaskStore(base_dir=temp_dir)
+        bad = temp_dir / "tasks" / "bad.json"
+        bad.write_text("not json")
+        seen = []
+        assert store.list(on_error=lambda path, error: seen.append((path, error))) == []
+        assert seen and seen[0][0] == bad
+        assert isinstance(store.diagnostics[0][1], CorruptedRecordError)
+
+    def test_failed_replace_cleans_temp_file(self, temp_dir: Path, sample_record: CanonicalTaskRecord, monkeypatch) -> None:
+        store = PortableTaskStore(base_dir=temp_dir)
+        def fail_replace(source, target):
+            raise OSError("injected replace failure")
+        monkeypatch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="injected"):
+            store.save(sample_record)
+        assert not list((temp_dir / "tasks").glob("*.tmp"))
 
 
 class TestErrorHandling:

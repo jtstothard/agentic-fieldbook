@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from .lifecycle import CanonicalTaskRecord, LifecycleState
@@ -39,7 +41,12 @@ class CorruptedRecordError(StorageError):
     """Raised when a record file is corrupted (invalid JSON, etc.)."""
 
 
+class InvalidTaskIDError(StorageError, ValueError):
+    """Raised when a task ID could escape the store's tasks directory."""
+
+
 SUPPORTED_SCHEMA_VERSION = "fieldbook.task-record.v1"
+_SAFE_TASK_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class PortableTaskStore:
@@ -61,6 +68,23 @@ class PortableTaskStore:
         self.base_dir = Path(base_dir)
         self.tasks_dir = self.base_dir / "tasks"
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
+        # A store is safe for concurrent callers within one process. Files remain
+        # the cross-process coordination boundary; os.replace provides atomicity.
+        self._lock = threading.RLock()
+        self._last_errors: list[tuple[Path, Exception]] = []
+
+    @property
+    def diagnostics(self) -> tuple[tuple[Path, Exception], ...]:
+        """Errors skipped by the most recent ``list`` call."""
+        with self._lock:
+            return tuple(self._last_errors)
+
+    @staticmethod
+    def _validate_task_id(task_id: str) -> None:
+        if not isinstance(task_id, str) or not task_id or not _SAFE_TASK_ID.fullmatch(task_id):
+            raise InvalidTaskIDError(
+                "task_id must contain only ASCII letters, digits, '_' or '-'"
+            )
 
     def save(self, record: CanonicalTaskRecord) -> None:
         """Save a record to disk with atomic write guarantees.
@@ -71,18 +95,25 @@ class PortableTaskStore:
         Args:
             record: The CanonicalTaskRecord to save.
         """
-        data = record.to_dict()
         task_id = record.task_id
-
-        # Write to temp file first
-        temp_file = self.tasks_dir / f"{task_id}.json.tmp"
-        target_file = self.tasks_dir / f"{task_id}.json"
-
-        with open(temp_file, "w") as f:
-            json.dump(data, f, indent=2)
-
-        # Atomic rename
-        os.replace(temp_file, target_file)
+        self._validate_task_id(task_id)
+        with self._lock:
+            data = record.to_dict()
+            provenance = getattr(record, "_provenance", None)
+            if provenance is not None:
+                data["provenance"] = provenance
+            temp_file = self.tasks_dir / f"{task_id}.json.tmp"
+            target_file = self.tasks_dir / f"{task_id}.json"
+            try:
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(temp_file, target_file)
+            finally:
+                # Covers serialization/write/replace failures and stale temp files.
+                try:
+                    temp_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def load(self, task_id: str) -> CanonicalTaskRecord:
         """Load a record from disk by task_id.
@@ -101,31 +132,39 @@ class PortableTaskStore:
         """
         from .lifecycle import CanonicalTaskRecord
 
-        target_file = self.tasks_dir / f"{task_id}.json"
+        self._validate_task_id(task_id)
+        with self._lock:
+            target_file = self.tasks_dir / f"{task_id}.json"
 
-        if not target_file.exists():
-            raise KeyError(f"Task not found: {task_id}")
+            if not target_file.exists():
+                raise KeyError(f"Task not found: {task_id}")
 
-        try:
-            with open(target_file) as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError) as exc:
-            raise CorruptedRecordError(f"Corrupted record file for task {task_id}: {exc}") from exc
+            try:
+                with open(target_file, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError) as exc:
+                raise CorruptedRecordError(f"Corrupted record file for task {task_id}: {exc}") from exc
 
-        # Validate schema version
-        schema = data.get("schema")
-        if schema is None:
-            raise SchemaVersionError(f"Record {task_id} missing schema version")
-        if schema != SUPPORTED_SCHEMA_VERSION:
-            raise UnknownSchemaVersionError(
-                f"Record {task_id} has unsupported schema version: {schema}. "
-                f"Supported: {SUPPORTED_SCHEMA_VERSION}"
-            )
+            schema = data.get("schema")
+            if schema is None:
+                raise SchemaVersionError(f"Record {task_id} missing schema version")
+            if schema != SUPPORTED_SCHEMA_VERSION:
+                raise UnknownSchemaVersionError(
+                    f"Record {task_id} has unsupported schema version: {schema}. "
+                    f"Supported: {SUPPORTED_SCHEMA_VERSION}"
+                )
 
-        # Reconstruct record
-        return CanonicalTaskRecord.from_dict(data)
+            record = CanonicalTaskRecord.from_dict(data)
+            if "provenance" in data:
+                setattr(record, "_provenance", data["provenance"])
+            return record
 
-    def list(self, state: LifecycleState | str | None = None) -> list[CanonicalTaskRecord]:
+    def list(
+        self,
+        state: LifecycleState | str | None = None,
+        *,
+        on_error: Callable[[Path, Exception], None] | None = None,
+    ) -> list[CanonicalTaskRecord]:
         """List all records, optionally filtered by lifecycle state.
 
         Args:
@@ -136,41 +175,30 @@ class PortableTaskStore:
         """
         from .lifecycle import CanonicalTaskRecord, LifecycleState
 
-        records = []
+        with self._lock:
+            records = []
+            self._last_errors = []
+            target_state = LifecycleState(state) if isinstance(state, str) else state
 
-        # Get all JSON files in tasks directory
-        json_files = list(self.tasks_dir.glob("*.json"))
-
-        for json_file in json_files:
-            # Skip temp files
-            if json_file.name.endswith(".tmp"):
-                continue
-
-            task_id = json_file.stem
-
-            try:
-                record = self.load(task_id)
-
-                # Filter by state if specified
-                if state is not None:
-                    if isinstance(state, str):
-                        target_state = LifecycleState(state)
-                    else:
-                        target_state = state
-
-                    if record.state != target_state:
+            for json_file in self.tasks_dir.glob("*.json"):
+                task_id = json_file.stem
+                try:
+                    self._validate_task_id(task_id)
+                    record = self.load(task_id)
+                    if target_state is not None and record.state != target_state:
                         continue
+                    records.append(record)
+                except (CorruptedRecordError, SchemaVersionError, KeyError, ValueError) as exc:
+                    self._last_errors.append((json_file, exc))
+                    if on_error is not None:
+                        on_error(json_file, exc)
 
-                records.append(record)
-            except (CorruptedRecordError, SchemaVersionError, KeyError):
-                # Skip corrupted or invalid files
-                continue
-
-        return records
+            return records
 
 
 __all__ = [
     "CorruptedRecordError",
+    "InvalidTaskIDError",
     "PortableTaskStore",
     "SchemaVersionError",
     "StorageError",

@@ -294,8 +294,9 @@ class TestPrecursorImportAdapter:
         assert record is not None
         assert isinstance(record, CanonicalTaskRecord)
         assert record.task_id != ""
-        # Decisions are mapped to VERIFIED state based on their status
-        assert record.state == LifecycleState.VERIFIED
+        # Historical terminal statuses are imported safely, not treated as new proof.
+        assert record.state == LifecycleState.PLANNED
+        assert any("downgraded" in warning for warning in getattr(record, "_provenance")["compatibility_report"]["warnings"])
 
     def test_import_ticket_to_canonical_record(self, sample_ticket_path):
         """Should import ticket to CanonicalTaskRecord."""

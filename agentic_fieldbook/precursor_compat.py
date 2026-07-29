@@ -101,27 +101,15 @@ def infer_risk_class_from_scope(
     Returns:
         (risk_class, rationale) where risk_class is "low", "medium", or "high"
     """
-    scope_text = " ".join(scope).lower()
+    scope_text = " ".join(scope)
+    context_text = " ".join(str(value) for value in (context or {}).values())
+    combined_text = f"{scope_text} {context_text}".lower()
 
-    # High-risk indicators
+    # High-risk checks deliberately run before low-risk checks.
     high_keywords = [
-        "production",
-        "prod",
-        "deploy",
-        "deploy",
-        "delete",
-        "drop",
-        "truncate",
-        "destroy",
-        "secret",
-        "billing",
-        "access",
-        "permission",
-        "downtime",
-        "release",
-        "migration",
-        "database",
-        "data loss",
+        "production", "prod", "deploy", "delete", "drop", "truncate", "destroy",
+        "secret", "billing", "access", "permission", "downtime", "release",
+        "migration", "database", "data loss",
     ]
 
     # Medium-risk indicators
@@ -151,15 +139,15 @@ def infer_risk_class_from_scope(
 
     # Check for high risk
     for keyword in high_keywords:
-        if keyword in scope_text:
+        if keyword in combined_text:
             return (
                 "high",
                 f"Inferred as high risk due to '{keyword}' keyword in scope or context",
             )
 
     # Check for low risk
-    low_count = sum(1 for kw in low_keywords if kw in scope_text)
-    if low_count >= 2 or (low_count == 1 and "local" in scope_text):
+    low_count = sum(1 for kw in low_keywords if kw in combined_text)
+    if low_count >= 2 or (low_count == 1 and "local" in combined_text):
         return (
             "low",
             "Inferred as low risk due to local/reversible/documentation nature",
@@ -312,17 +300,26 @@ class PrecursorImportAdapter:
         return sections
 
     def _parse_markdown_file(self, file_path: Path) -> dict[str, object]:
-        """Parse a markdown file into structured data.
-
-        Args:
-            file_path: Path to the markdown file
-
-        Returns:
-            Dict with parsed content, frontmatter, sections, and metadata
-        """
+        """Parse a markdown file, reporting (rather than raising) bad frontmatter."""
         content = file_path.read_text()
         frontmatter, remaining_content = self._parse_frontmatter(content)
         sections = self._extract_sections(remaining_content)
+        warnings: list[str] = []
+        if content.startswith("---"):
+            end_marker = content.find("\n---\n", 4)
+            if end_marker == -1:
+                warnings.append("Malformed frontmatter: missing closing --- marker")
+            else:
+                frontmatter_text = content[4:end_marker]
+                malformed = [
+                    line.strip() for line in frontmatter_text.splitlines()
+                    if line.strip() and ":" not in line
+                ]
+                if malformed:
+                    warnings.append(
+                        "Malformed frontmatter: lines without key/value separator: "
+                        + ", ".join(malformed)
+                    )
 
         return {
             "source_file": str(file_path),
@@ -331,6 +328,7 @@ class PrecursorImportAdapter:
             "sections": sections,
             "raw_content": content,
             "filename": file_path.name,
+            "_compatibility_warnings": warnings,
         }
 
     def parse_decision_file(self, file_path: Path) -> dict[str, object]:
@@ -454,9 +452,12 @@ class PrecursorImportAdapter:
         source_type = parsed_data.get("source_type", "unknown")
         source_file = parsed_data.get("filename", "unknown")
 
+        raw_warnings = parsed_data.get("_compatibility_warnings", [])
+        warnings = list(raw_warnings) if isinstance(raw_warnings, list) else []
         report = CompatibilityReport(
             source_file=source_file,
             source_type=source_type,
+            warnings=warnings,
         )
 
         # Track provenance - start with all parsed fields
@@ -606,6 +607,7 @@ class PrecursorImportAdapter:
                 "executive_summary",
                 "audit_criteria",
                 "results",
+                "_compatibility_warnings",
             }:
                 provenance[key] = value
 
@@ -683,11 +685,16 @@ class PrecursorImportAdapter:
         Returns:
             (LifecycleState, rationale) tuple
         """
-        status = parsed_data.get("status", "unknown").lower()
+        status_value = parsed_data.get("status", "unknown")
+        status = str(status_value).strip().lower()
 
-        # Direct mapping
-        for precursor_state, fieldbook_state in self.state_mapping.items():
-            if precursor_state in status:
+        # Match complete normalized status tokens/phrases, not substrings:
+        # ``ready`` must not match ``not-ready`` or ``readiness-check``.
+        for precursor_state, fieldbook_state in sorted(
+            self.state_mapping.items(), key=lambda item: len(item[0]), reverse=True
+        ):
+            pattern = r"(?<![a-z0-9-])" + re.escape(precursor_state) + r"(?![a-z0-9-])"
+            if re.search(pattern, status):
                 return fieldbook_state, f"Mapped from status: {status}"
 
         # Default based on artifact type
@@ -734,17 +741,31 @@ class PrecursorImportAdapter:
         if task_id is None:
             task_id = self._generate_task_id(file_path)
 
-        # Create record
+        # Imported status is historical context, not proof of newly completed work.
+        # Terminal states are retained only when the source carries explicit history
+        # and evidence; otherwise import at PLANNED so normal lifecycle gates apply.
+        initial_state, state_rationale = self.infer_lifecycle_state(parsed_data)
+        has_historical_support = bool(parsed_data.get("history")) and bool(parsed_data.get("evidence"))
+        if initial_state in {
+            LifecycleState.VERIFIED,
+            LifecycleState.FAILED,
+            LifecycleState.CANCELLED,
+            LifecycleState.SUPERSEDED,
+        } and not has_historical_support:
+            initial_state = LifecycleState.PLANNED
+            compatibility_report.warnings.append(
+                f"Historical terminal state downgraded to planned on import: {state_rationale}"
+            )
+
         record = CanonicalTaskRecord.create(contract, task_id=task_id)
+        if initial_state is LifecycleState.PLANNED:
+            record.transition(LifecycleState.PLANNED, actor="precursor-import", reason=state_rationale)
+        elif initial_state is not LifecycleState.PROPOSED:
+            # Unsupported historical execution states are intentionally safe.
+            compatibility_report.warnings.append(
+                f"Historical state {initial_state.value} imported as proposed"
+            )
 
-        # Infer and set lifecycle state
-        initial_state, _ = self.infer_lifecycle_state(parsed_data)
-
-        # Manually set state (bypassing normal transitions for import)
-        record._state = initial_state
-
-        # Store compatibility report as metadata in the record
-        # We'll attach it to the contract's domain field for persistence
         record._provenance = {
             "compatibility_report": {
                 "source_file": compatibility_report.source_file,
