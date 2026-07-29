@@ -8,10 +8,12 @@ JSON by any harness or adapter.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Any, Iterable, Mapping
 
 from .governance import (
+    CapabilityMismatchError,
     GovernanceState,
     MissingApprovalError,
     MissingRollbackError,
@@ -239,6 +241,7 @@ class CanonicalTaskRecord:
         actor: str,
         reason: str = "",
         evidence: Iterable[Evidence | Mapping[str, Any]] = (),
+        executor_capabilities: tuple[str, ...] | None = None,
     ) -> None:
         target_state = _state(target)
         if not actor or not actor.strip():
@@ -270,6 +273,46 @@ class CanonicalTaskRecord:
 
         if requires_approval:
             raise InvalidTransitionError(approval_error or "Human approval required")
+
+        # Capability ceiling enforcement at first APPROVED → EXECUTING gate
+        if target_state is LifecycleState.EXECUTING and self.state is LifecycleState.APPROVED:
+            if self.contract.capabilities:
+                if executor_capabilities is None:
+                    raise InvalidTransitionError("executor_capabilities required")
+
+                from .governance import check_capabilities
+
+                satisfied, missing = check_capabilities(
+                    self.contract.capabilities,
+                    executor_capabilities,
+                )
+
+                self._governance.add_capability_check(
+                    required=self.contract.capabilities,
+                    executor=executor_capabilities,
+                    satisfied=satisfied,
+                    missing=missing,
+                )
+
+                if not satisfied:
+                    raise CapabilityMismatchError(
+                        f"Executor lacks required capabilities: {', '.join(missing)}"
+                    )
+
+            # Approval defense-in-depth: check executor != approver for high-risk and always-ask
+            if self.contract.risk_class == "high" or self._governance.requires_human_approval():
+                # Find who approved this task (the actor in the APPROVED transition)
+                approver_actor = None
+                for h in self._history:
+                    if h["to"] == LifecycleState.APPROVED.value:
+                        approver_actor = h["actor"]
+                        break
+
+                # Block if same actor approved and executes
+                if approver_actor is not None and actor == approver_actor:
+                    raise InvalidTransitionError(
+                        "executor must differ from approver for high-risk and always-ask tasks"
+                    )
 
         # Record human approval when transitioning to APPROVED with approval metadata
         if target_state is LifecycleState.APPROVED:
@@ -339,6 +382,7 @@ class CanonicalTaskRecord:
             "to": target_state.value,
             "actor": actor,
             "reason": reason,
+            "timestamp": datetime.now(tz=None).astimezone().isoformat(),
         })
         self._state = target_state
 
