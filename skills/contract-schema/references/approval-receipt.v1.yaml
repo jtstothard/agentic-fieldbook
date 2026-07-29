@@ -1,0 +1,40 @@
+# Agentic Operating System — Approval Receipt Schema v1
+# Canonical YAML representation. JSON is the equivalent machine form.
+# An approval receipt is an unforgeable attestation that a specific capability
+# action on a target has been explicitly authorized by a pseudonymous issuer.
+# Receipts are immutable; any change creates a new receipt with a new receipt_id.
+
+$schema: aos-approval-receipt-v1
+receipt_version: "1"  # REQUIRED. Must be exactly "1" for this version.
+approval_request_id: ""  # REQUIRED. Stable non-empty string linking to the request.
+decision: ""  # REQUIRED. One of: "approved", "rejected", "expired", "revoked".
+              # Only "approved" receipts authorize action; others are valid structurally.
+action_digest: ""  # REQUIRED. SHA256 digest of canonicalized action package.
+                   # Format: "sha256:<64 hex characters>"
+target: {}  # REQUIRED. Non-empty immutable target identity (same validation as contract).
+capability: ""  # REQUIRED. Non-empty string naming the capability being approved.
+parameters: {}  # REQUIRED. Mapping of parameters for the capability action.
+issuer: ""  # REQUIRED. Pseudonymous authenticated subject ID (deployment-scoped).
+            # Never raw PII per Ticket 01 §5.
+issued_at: ""  # REQUIRED. ISO-8601 timestamp when receipt was issued.
+valid_until: ""  # REQUIRED. ISO-8601 timestamp when receipt expires (must be after issued_at).
+audience: ""  # REQUIRED. Non-empty string identifying the broker/deployment.
+receipt_id: ""  # REQUIRED. Stable non-empty string uniquely identifying this receipt.
+nonce: ""  # REQUIRED. Non-empty string unique per receipt (prevents replay).
+signature:  # REQUIRED. Signature metadata and detached value.
+  algorithm: ""  # REQUIRED. Non-empty string naming the signing algorithm.
+  key_id: ""  # REQUIRED. Non-empty string deployment key identifier.
+  value: ""  # REQUIRED. Detached signature string (EXCLUDED from signed payload).
+
+# Optional quorum envelope (present when Ticket 01 §6 requires 2-of-2 approval).
+# If present, all fields are required.
+# quorum:
+#   required: 0  # REQUIRED. Integer >= 1, number of approvals required.
+#   approved: 0  # REQUIRED. Integer >= 1, must equal required for valid quorum receipt.
+#   signers:  # REQUIRED. List of signer mappings.
+#     - subject: ""  # REQUIRED. Non-empty string signer identifier.
+#       decision: ""  # REQUIRED. Must be "approved" for quorum validity.
+#       timestamp: ""  # REQUIRED. ISO-8601 timestamp of signer's decision.
+#   shared_digest: ""  # REQUIRED. Same sha256 format as action_digest.
+#                       # All signers authorize the same action digest.
+#   one_lease_max: true  # REQUIRED. Must be true (one-time authorization per Ticket 01 §3).

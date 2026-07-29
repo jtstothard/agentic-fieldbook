@@ -11,6 +11,16 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Mapping
 
+from .governance import (
+    GovernanceState,
+    MissingApprovalError,
+    MissingRollbackError,
+    detect_always_ask_capabilities,
+    requires_rollback_evidence,
+    validate_approval_requirement,
+    validate_rollback_requirement,
+)
+
 
 class LifecycleState(str, Enum):
     PROPOSED = "proposed"
@@ -73,6 +83,18 @@ class TaskContract:
             values = getattr(self, name)
             if not isinstance(values, tuple) or any(not isinstance(item, str) or not item.strip() for item in values):
                 raise ValueError(f"{name} must be a tuple of non-empty strings")
+
+        # Validate high-risk contracts have rollback requirements
+        if self.risk_class == "high":
+            rollback_keywords = ("rollback", "revert", "backout", "recovery")
+            has_rollback = any(
+                any(keyword in req.lower() for keyword in rollback_keywords)
+                for req in self.required_evidence
+            )
+            if not has_rollback:
+                raise ValueError(
+                    "High-risk contracts must declare rollback/recovery evidence requirements"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -179,12 +201,20 @@ class CanonicalTaskRecord:
     _state: LifecycleState = field(default=LifecycleState.PROPOSED, init=False, repr=False)
     _history: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
     _evidence: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
+    _governance: GovernanceState = field(default_factory=GovernanceState, init=False, repr=False)
 
     @classmethod
     def create(cls, contract: TaskContract, *, task_id: str) -> "CanonicalTaskRecord":
         if not task_id or not task_id.strip():
             raise ValueError("task_id must be a non-empty string")
-        return cls(contract=contract, task_id=task_id)
+        record = cls(contract=contract, task_id=task_id)
+
+        # Initialize governance state with always-ask categories
+        always_ask = detect_always_ask_capabilities(contract.capabilities)
+        record._governance.always_ask_categories = tuple(cat.value for cat in always_ask)
+        record._governance.rollback_declared = requires_rollback_evidence(contract.risk_class)
+
+        return record
 
     @property
     def is_terminal(self) -> bool:
@@ -227,6 +257,48 @@ class CanonicalTaskRecord:
         if not valid:
             raise InvalidTransitionError(f"cannot transition from {self._state.value} to {target_state.value}")
 
+        # Governance checks
+        previous_actor = self._history[-1]["actor"] if self._history else None
+        requires_approval, approval_error = validate_approval_requirement(
+            self.contract.risk_class,
+            self.contract.capabilities,
+            self._governance.has_approval(),
+            target_state.value,
+            actor,
+            previous_actor,
+        )
+
+        if requires_approval:
+            raise InvalidTransitionError(approval_error or "Human approval required")
+
+        # Record human approval when transitioning to APPROVED with approval metadata
+        if target_state is LifecycleState.APPROVED:
+            # Check if this is a human approval (not auto-approval)
+            # We consider it an approval if the actor differs from previous state's actor
+            # or if reason contains approval-related keywords
+            if self._history and self._history[-1]["actor"] != actor:
+                self._governance.add_approval(actor, reason or "Transition to APPROVED")
+            elif self._governance.requires_human_approval():
+                # For always-ask or high-risk, record approval
+                self._governance.add_approval(actor, reason or "Human approval for high-risk/always-ask task")
+
+        additions = [_evidence_item(item) for item in evidence]
+
+        # Check rollback requirements for high-risk FAILED transitions
+        if target_state is LifecycleState.FAILED and self.contract.risk_class == "high":
+            rollback_keywords = ("rollback", "revert", "backout", "recovery")
+            has_rollback = any(
+                any(keyword in item.get("requirement", "").lower() for keyword in rollback_keywords)
+                for item in self._evidence
+            ) or any(
+                any(keyword in item.requirement.lower() for keyword in rollback_keywords)
+                for item in additions
+            )
+            if not has_rollback:
+                raise MissingRollbackError(
+                    "High-risk tasks that fail must provide rollback evidence"
+                )
+
         # Track executor actor for verifier independence check
         executor_actor: str | None = None
         for h in self._history:
@@ -234,7 +306,6 @@ class CanonicalTaskRecord:
                 executor_actor = h["actor"]
                 break
 
-        additions = [_evidence_item(item) for item in evidence]
         if target_state is LifecycleState.VERIFIED:
             # Check verifier independence for medium/high risk
             if self.contract.risk_class in {"medium", "high"}:
@@ -279,6 +350,7 @@ class CanonicalTaskRecord:
             "state": self._state.value,
             "history": [dict(item) for item in self._history],
             "evidence": [dict(item) for item in self._evidence],
+            "governance": self._governance.to_dict(),
         }
 
     @classmethod
@@ -310,6 +382,10 @@ class CanonicalTaskRecord:
         record._evidence = validated_evidence
 
         record._history = [dict(item) for item in data.get("history", [])]
+
+        # Restore governance state if present (backward compatible)
+        if "governance" in data:
+            record._governance = GovernanceState.from_dict(data["governance"])
 
         return record
 

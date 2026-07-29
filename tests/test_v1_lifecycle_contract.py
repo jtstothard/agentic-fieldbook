@@ -355,24 +355,30 @@ def test_high_risk_rejects_self_verification():
         risk_class="high",
         capabilities=("write",),
         acceptance_criteria=("criterion-1",),
-        required_evidence=("evidence-1",),
+        required_evidence=("evidence-1", "rollback-step"),
     )
     record = CanonicalTaskRecord.create(high_contract, task_id="task-16")
+    record.transition(LifecycleState.PLANNED, actor="planner")
+    # High-risk requires independent approver
+    record.transition(LifecycleState.APPROVED, actor="approver", reason="Human approval")
+    record.transition(LifecycleState.EXECUTING, actor="executor")
     for state in (
-        LifecycleState.PLANNED,
-        LifecycleState.APPROVED,
-        LifecycleState.EXECUTING,
         LifecycleState.REPORTED_COMPLETE,
         LifecycleState.REVIEW,
         LifecycleState.VERIFICATION,
     ):
-        record.transition(state, actor="same-actor")
+        record.transition(state, actor="executor")
 
+    # Executor cannot self-verify
     with pytest.raises(InvalidTransitionError, match="verifier must differ from executor"):
         record.transition(
             LifecycleState.VERIFIED,
-            actor="same-actor",
-            evidence=[Evidence("evidence-1", "passed", "tool", "result")],
+            actor="executor",
+            evidence=[
+                Evidence("evidence-1", "passed", "tool", "result"),
+                Evidence("rollback-step", "passed", "tool", "result"),
+                Evidence("criterion-1", "passed", "tool", "result"),
+            ],
         )
 
 
