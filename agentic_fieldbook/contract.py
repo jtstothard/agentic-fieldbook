@@ -34,6 +34,21 @@ def _valid_target_identity(value: Any) -> bool:
     return False
 
 
+def _strict_equal(left: Any, right: Any) -> bool:
+    """Compare YAML values without Python's bool/int equality coercion."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, Mapping):
+        if left.keys() != right.keys():
+            return False
+        return all(_strict_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _strict_equal(item, other) for item, other in zip(left, right)
+        )
+    return left == right
+
+
 def validate_capability_approval(contract: Mapping[str, Any]) -> list[str]:
     """Return deterministic validation errors for a capability-approval contract.
 
@@ -76,7 +91,7 @@ def validate_capability_approval(contract: Mapping[str, Any]) -> list[str]:
         for field in ("contract_digest", "target", "capability", "parameters"):
             if field not in binding:
                 errors.append(f"approval_binding missing field: {field}")
-            elif field in contract and binding[field] != contract[field]:
+            elif field in contract and not _strict_equal(binding[field], contract[field]):
                 errors.append(f"approval_binding mismatch: {field}")
     return errors
 

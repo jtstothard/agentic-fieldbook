@@ -56,6 +56,25 @@ def test_approval_binding_must_match_contract_fields():
     assert errors == ["approval_binding mismatch: target"]
 
 
+def test_approval_binding_rejects_type_substitution():
+    numeric_target = {"id": 1}
+    target_binding = {**VALID["approval_binding"], "target": {"id": True}}
+    errors = validate_capability_approval({
+        **VALID,
+        "target": numeric_target,
+        "approval_binding": target_binding,
+    })
+    assert errors == ["approval_binding mismatch: target"]
+
+    parameters_binding = {**VALID["approval_binding"], "parameters": {"count": 1.0}}
+    errors = validate_capability_approval({
+        **VALID,
+        "parameters": {"count": 1},
+        "approval_binding": parameters_binding,
+    })
+    assert errors == ["approval_binding mismatch: parameters"]
+
+
 def test_empty_target_is_rejected():
     errors = validate_capability_approval({
         **VALID,
