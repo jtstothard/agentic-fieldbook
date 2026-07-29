@@ -1,6 +1,7 @@
 """Contract command for discovering test runner commands in workspaces."""
 
 import os
+import re
 import sys
 import subprocess
 from pathlib import Path
@@ -12,7 +13,8 @@ import yaml
 CAPABILITY_APPROVAL_REQUIRED_FIELDS = (
     "broker_type", "broker_endpoint", "lease_ttl", "operation_limit",
     "contract_digest", "verification_method", "target_immutable",
-    "approval_channel", "approval_binding",
+    "approval_channel", "target", "capability", "parameters",
+    "approval_binding",
 )
 
 
@@ -28,14 +30,38 @@ def validate_capability_approval(contract: Mapping[str, Any]) -> list[str]:
         if field not in contract or contract[field] is None or contract[field] == "":
             errors.append(f"missing required field: {field}")
 
-    if "lease_ttl" in contract and not isinstance(contract["lease_ttl"], bool):
-        if not isinstance(contract["lease_ttl"], int) or contract["lease_ttl"] < 1:
+    if "lease_ttl" in contract:
+        if type(contract["lease_ttl"]) is not int or contract["lease_ttl"] < 1:
             errors.append("lease_ttl must be an integer >= 1")
-    if "operation_limit" in contract and not isinstance(contract["operation_limit"], bool):
-        if not isinstance(contract["operation_limit"], int) or contract["operation_limit"] < 1:
+    if "operation_limit" in contract:
+        if type(contract["operation_limit"]) is not int or contract["operation_limit"] < 1:
             errors.append("operation_limit must be an integer >= 1")
     if "target_immutable" in contract and contract["target_immutable"] is not True:
         errors.append("target_immutable must be true for capability-approval contracts")
+
+    for field in ("broker_type", "broker_endpoint", "verification_method", "approval_channel",
+                  "capability"):
+        if field in contract and (not isinstance(contract[field], str) or not contract[field].strip()):
+            errors.append(f"{field} must be a non-empty string")
+    if "target" in contract and not isinstance(contract["target"], Mapping):
+        errors.append("target must be a mapping")
+    digest = contract.get("contract_digest")
+    if "contract_digest" in contract and (
+            not isinstance(digest, str) or
+            not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest.strip())):
+        errors.append("contract_digest must be a sha256:<64 hex characters> digest")
+    if "parameters" in contract and not isinstance(contract["parameters"], Mapping):
+        errors.append("parameters must be a mapping")
+
+    binding = contract.get("approval_binding")
+    if "approval_binding" in contract and not isinstance(binding, Mapping):
+        errors.append("approval_binding must map contract_digest, target, capability, and parameters")
+    elif isinstance(binding, Mapping):
+        for field in ("contract_digest", "target", "capability", "parameters"):
+            if field not in binding:
+                errors.append(f"approval_binding missing field: {field}")
+            elif field in contract and binding[field] != contract[field]:
+                errors.append(f"approval_binding mismatch: {field}")
     return errors
 
 

@@ -3,6 +3,8 @@
 import argparse
 from pathlib import Path
 
+import yaml
+
 from agentic_fieldbook.contract import check_capability_approval, validate_capability_approval
 from agentic_fieldbook.plugin import _handle_aos_command, _register_aos_cli
 
@@ -12,11 +14,16 @@ VALID = {
     "broker_endpoint": "https://broker.example.test",
     "lease_ttl": 300,
     "operation_limit": 1,
-    "contract_digest": "sha256:abc",
+    "contract_digest": "sha256:" + "a" * 64,
     "verification_method": "direct-query",
     "target_immutable": True,
     "approval_channel": "telegram",
-    "approval_binding": "contract_digest + target + capability + parameters",
+    "target": {"cluster": "example", "type": "guest", "id": "123"},
+    "capability": "snapshot_guest",
+    "parameters": {"snapshot": "approved"},
+}
+VALID["approval_binding"] = {
+    key: VALID[key] for key in ("contract_digest", "target", "capability", "parameters")
 }
 
 
@@ -34,6 +41,34 @@ def test_missing_immutable_target_is_rejected_deterministically():
     assert errors == ["missing required field: target_immutable"]
 
 
+def test_boolean_ttl_and_operation_limit_are_rejected():
+    for field in ("lease_ttl", "operation_limit"):
+        for value in (True, False):
+            errors = validate_capability_approval({**VALID, field: value})
+            assert errors == [f"{field} must be an integer >= 1"]
+
+
+def test_approval_binding_must_match_contract_fields():
+    errors = validate_capability_approval({
+        **VALID,
+        "approval_binding": {**VALID["approval_binding"], "target": {"id": "other"}},
+    })
+    assert errors == ["approval_binding mismatch: target"]
+
+
+def test_malformed_strings_and_digest_are_rejected():
+    errors = validate_capability_approval({
+        **VALID,
+        "broker_endpoint": " ",
+        "contract_digest": "sha256:abc",
+        "approval_binding": {**VALID["approval_binding"], "contract_digest": "sha256:abc"},
+    })
+    assert errors == [
+        "broker_endpoint must be a non-empty string",
+        "contract_digest must be a sha256:<64 hex characters> digest",
+    ]
+
+
 def test_zero_operation_limit_is_rejected():
     assert validate_capability_approval({**VALID, "operation_limit": 0}) == [
         "operation_limit must be an integer >= 1"
@@ -45,7 +80,7 @@ def test_missing_required_fields_are_named():
     assert errors == [f"missing required field: {field}" for field in (
         "broker_type", "broker_endpoint", "lease_ttl", "operation_limit",
         "contract_digest", "verification_method", "target_immutable",
-        "approval_channel", "approval_binding",
+        "approval_channel", "target", "capability", "parameters", "approval_binding",
     )]
 
 
@@ -67,7 +102,7 @@ def _parse_public_aos_contract(path: Path) -> argparse.Namespace:
 
 def test_public_cli_accepts_valid_capability_approval_contract(tmp_path: Path, capsys):
     path = tmp_path / "valid.yaml"
-    path.write_text("\n".join(f"{key}: {str(value).lower() if isinstance(value, bool) else value}" for key, value in VALID.items()))
+    path.write_text(yaml.safe_dump(VALID, sort_keys=False))
     args = _parse_public_aos_contract(path)
     assert args.aos_subcommand == "contract"
     assert _handle_aos_command(args) == 0

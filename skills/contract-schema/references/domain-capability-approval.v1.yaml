@@ -23,5 +23,11 @@ target_immutable: true   # REQUIRED. Whether the target is locked to exact VMID/
                          # Must be true for capability-approval (cannot be overridden to false).
 approval_channel: ""     # REQUIRED. Channel through which human approval was obtained
                          # (e.g. "telegram", "cli").
-approval_binding: ""     # REQUIRED. What the approval is bound to.
-                         # Must be: contract_digest + target + capability + parameters.
+target: {}               # REQUIRED. Immutable target identity used by the operation.
+capability: ""           # REQUIRED. Exact capability/operation being approved.
+parameters: {}           # REQUIRED. Exact operation parameters being approved.
+approval_binding:         # REQUIRED. Structured binding; every value must match the fields above.
+  contract_digest: ""
+  target: {}
+  capability: ""
+  parameters: {}
