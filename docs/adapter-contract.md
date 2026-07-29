@@ -1,6 +1,7 @@
 # v0.3.0 Adapter Contract
 
-**Status:** Minimal stable contract derived from contrast evidence (16268bb)
+**Status:** Minimal stable contract derived from contrast evidence
+**Provenance:** Contract boundary implementation `c034977`; contrast evidence `aa3806681f68984b1cc47109eab2ea20ab2c0e96`; historical baseline `16268bb4544396ea4f492a5bba3046ccadf9a9bb`
 **Base ref:** 57b9b17 (inline-default adapter extraction)
 **Evidence matrix:** docs/adapter-contrast-matrix.md
 
@@ -16,21 +17,17 @@ This contract defines the minimal stable interface for Hermes dispatch adapters.
 
 ## Core Operations
 
-### dispatch(goal, *, assignee=None, context="", dry_run=False, retry=0, timeout=0, cancellation_token="", idempotency_key="")
+### dispatch(goal, *, assignee)
 
 **Purpose:** Submit a task for execution and return an immediate result.
 
 **Required parameters:**
 - `goal` (str): Task description or goal.
+- `assignee` (str | None): Target Hermes profile. Inline accepts the value as metadata; Kanban uses it for board routing.
 
-**Optional parameters:**
-- `assignee` (str | None): Target Hermes profile. Inline accepts but ignores; Kanban enforces via board routing.
-- `context` (str): Additional context for task execution.
-- `dry_run` (bool): Preview execution without side effects. Inline records but doesn't enforce; Kanban supports real dry-run.
-- `retry` (int): Retry attempts. Both adapters record in metadata but don't enforce (policy is external).
-- `timeout` (int): Timeout in seconds. Both adapters record in metadata but don't enforce (policy is external).
-- `cancellation_token` (str): Token for cancellation. Both adapters record in metadata but don't enforce.
-- `idempotency_key` (str): Key for idempotent requests. Inline records but doesn't enforce; Kanban requires backend enforcement (not implemented in prototype).
+Dry-run, retry, timeout, cancellation, and idempotency controls are not part of
+this shared dispatch seam. Kanban-specific controls remain on optional
+capability protocols and are not silently accepted by the inline adapter.
 
 **Returns:** DispatchResult
 ```python
@@ -47,10 +44,16 @@ class DispatchResult:
 - **Kanban:** Returns persistent task_id, async execution via separate claim lifecycle.
 
 **Dry-run semantics:**
-- **Inline:** Parameter recorded in metadata but not enforced; no side-effect prevention.
+- **Inline:** Not exposed by the stable dispatch seam.
 - **Kanban:** Supports real dry-run; dispatch can run without executing tasks, can reclaim stale tasks.
 
-**Evidence:** Scenario `create_dispatch` (9/9 successful), Scenario `dry_run` (9/9 successful).
+**Evidence:** Scenario `create_dispatch` (final matrix: 9/9 successful), Scenario `dry_run` (final matrix: 9/9 successful).
+
+**Migration from the pre-v0.3 prototype:** callers must pass a goal and
+keyword-only `assignee`; `context`, `dry_run`, retry, timeout, cancellation,
+and idempotency controls are no longer accepted by the shared inline seam.
+Apply those policies in the owning dispatcher or an optional Kanban capability
+instead of passing them through `dispatch`.
 
 **Limitations:**
 - **Inline:** Cannot prevent duplicate work, no durable result storage, Cannot re-read results after session ends, task_id=None means no re-read after session ends.
@@ -62,17 +65,17 @@ Observed limitation names retained for callers and traceability:
 
 ---
 
-### get_status(task_id: str) -> DispatchStatus
+### get_status(task_id: str) -> StatusResult
 
 **Purpose:** Query the status of a dispatched task.
 
-**Returns:** DispatchStatus
+**Returns:** StatusResult
 ```python
 @dataclass
-class DispatchStatus:
+class StatusResult:
     success: bool              # True if status query succeeded
+    status: TaskStatus         # Current adapter status
     metadata: dict[str, Any]   # Backend-specific status data
-    message: str               # Human-readable status
 ```
 
 **Behavior:**
@@ -91,17 +94,17 @@ class DispatchStatus:
 
 These operations are NOT part of the minimal stable contract. They are Kanban-specific and not supported by Inline. Callers MUST use capability checks before invoking.
 
-### create(title, *, assignee=None, workspace="scratch", branch=None) -> dict[str, Any]
+### create_task(title, *, assignee) -> CreateResult
 
-**Purpose:** Create a task without dispatching (Kanban only).
+**Purpose:** Create a task without dispatching through the optional Kanban capability.
 
 **Behavior:**
-- Creates a persistent task with unique task_id.
-- Returns task metadata including id, status, workspace.
+- Creates a persistent task with unique task_id and `READY` status.
+- Returns `CreateResult` with task metadata.
 
 **Limitations:** Inline does not support create-dispatch separation; inline dispatch creates and executes in one operation.
 
-**Evidence:** Scenario `claim_poll` (9/9 successful).
+**Evidence:** Kanban creation behavior in Scenario `claim_poll` (9/9 successful).
 
 ---
 
@@ -204,7 +207,7 @@ These operations are NOT part of the minimal stable contract. They are Kanban-sp
 
 ### Inline Adapter
 
-- **No enforcement:** idempotency_key parameter recorded in metadata but not enforced.
+- **Not exposed:** idempotency is not an inline dispatch control.
 - **No deduplication:** Each invocation is independent; cannot prevent duplicate work.
 
 ### Kanban Adapter
@@ -250,7 +253,7 @@ These operations are NOT part of the minimal stable contract. They are Kanban-sp
 - **Inline:** No dependency tracking; failures are local to the session.
 - **Kanban:** Tasks can depend on other tasks; upstream failures block downstream via parent-child links.
 
-**Evidence:** Not directly tested in contrast matrix; derived from Kanban system design.
+**Evidence:** Not directly tested in contrast matrix; dependency recovery is out of contract scope and makes no tested behavior claim.
 
 **Recovery boundaries:**
 - **Inline:** N/A — no dependency model.
@@ -263,23 +266,28 @@ These operations are NOT part of the minimal stable contract. They are Kanban-sp
 Before invoking Kanban-only operations, callers MUST verify the adapter supports them. Callers MUST verify the adapter supports them before invoking any optional operation:
 
 ```python
-# Check if adapter supports Kanban operations
-if hasattr(adapter, 'claim'):
-    # Safe to use claim(), poll(), read_result(), etc.
-    task = adapter.create(title, assignee="worker")
-    claimed = adapter.claim(task["id"])
-else:
+# Check each optional protocol independently before using it
+task = None
+capabilities = adapter.get_capabilities()
+if AdapterCapability.TASK_CREATION in capabilities and isinstance(adapter, TaskCreator):
+    task = adapter.create_task(title, assignee="worker")
+
+if (AdapterCapability.CLAIM_LIFECYCLE in capabilities
+        and task is not None
+        and isinstance(adapter, ClaimLifecycle)):
+    claimed = adapter.claim_task(task.task_id)
+elif task is None:
     # Inline adapter — use dispatch() only
     result = adapter.dispatch(goal, assignee="worker")
 ```
 
-**Contract requirement:** Adapters that do NOT support an operation must NOT define the method. Use `hasattr()` or `getattr()` for capability detection.
+**Contract requirement:** Optional operations are exposed only by capability protocols. Use `get_capabilities()` before invoking them; unsupported adapters must not fake success.
 
 ---
 
 ## Metadata Contract
 
-Both adapters return metadata in DispatchResult and DispatchStatus. The following fields are standard across adapters:
+Both adapters return metadata in DispatchResult and StatusResult. The following fields are standard across adapters:
 
 ### Standard metadata fields (present in both adapters):
 
@@ -289,11 +297,7 @@ Both adapters return metadata in DispatchResult and DispatchStatus. The followin
 ### Adapter-specific fields (not guaranteed across adapters):
 
 **Inline:**
-- `dry_run` (bool): Recorded if provided.
-- `retry` (int): Recorded if provided.
-- `timeout` (int): Recorded if provided.
-- `cancellation_token` (str): Recorded if provided.
-- `idempotency_key` (str): Recorded if provided.
+- No adapter-specific execution controls are exposed through the stable seam.
 
 **Kanban:**
 - Full task record fields from `kanban show --json`.
@@ -312,7 +316,7 @@ All contract operations must produce deterministic results:
 - **Failure:** Raises specific exception with diagnostic message.
 - **Ambiguity:** Never return success when operation failed; errors are explicit.
 
-**Evidence verification:** All 9 scenarios produced deterministic outcomes (8/8 inline successful, 8/8 kanban successful, 1 scenario with expected limitation differences).
+**Evidence verification:** The final matrix defines 9 scenarios and reports 9/9 successful outcomes for each adapter.
 
 ---
 
@@ -345,11 +349,11 @@ Contract tests MUST cover:
 
 This contract is derived from the following evidence artifacts:
 
-- **Contrast matrix:** docs/adapter-contrast-matrix.md (generated from 16268bb)
+- **Contrast matrix:** docs/adapter-contrast-matrix.md (generated from final fix commit)
 - **Contrast script:** scripts/adapter_contrast_matrix.py
 - **Base ref:** 57b9b17 (inline-default adapter extraction)
 - **Tests:**
-  - tests/test_inline_dispatch_characterization.py (8 passed)
+  - tests/test_inline_dispatch_characterization.py (9 passed)
   - tests/test_kanban_adapter.py (7 passed)
 
 **Provenance:** Every contract statement traces to observed evidence or is explicitly excluded as unsupported.

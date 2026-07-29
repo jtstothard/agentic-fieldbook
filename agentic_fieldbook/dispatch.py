@@ -1,10 +1,8 @@
 """Hermes dispatch adapters for Agentic Fieldbook.
 
 This module provides adapter implementations for dispatching tasks to agent workers.
-The inline-default adapter wraps the existing Hermes delegate_task behavior.
-
-Note: The v0.3.0 adapter contract is defined in adapter_contract.py. This module
-contains the original adapter implementations for backward compatibility.
+The inline-default adapter wraps the existing Hermes delegate_task behavior without
+introducing a stable contract interface.
 """
 
 from __future__ import annotations
@@ -43,9 +41,6 @@ class InlineAdapter:
     models the externally observable behavior of the inline path. The actual
     delegate_task call would happen in the real execution flow through the
     planning-routing skill's dispatch mechanics.
-
-    Note: This is the v0.1/v0.2 API. For the v0.3.0 contract interface, see
-    InlineAdapterContract in inline_adapter_contract.py.
     """
 
     def dispatch(
@@ -53,12 +48,6 @@ class InlineAdapter:
         goal: str,
         *,
         assignee: str | None,
-        context: str = "",
-        dry_run: bool = False,
-        retry: int = 0,
-        timeout: int = 0,
-        cancellation_token: str = "",
-        idempotency_key: str = "",
     ) -> DispatchResult:
         """
         Dispatch a task via the inline-default path.
@@ -69,12 +58,6 @@ class InlineAdapter:
         Args:
             goal: The task description or goal string.
             assignee: The Hermes profile to assign the task to.
-            context: Additional context for the task execution.
-            dry_run: If True, preview execution without side effects.
-            retry: Number of retry attempts (inline path doesn't own retry policy).
-            timeout: Timeout in seconds (inline path doesn't own timeout policy).
-            cancellation_token: Token for cancellation (inline path doesn't own cancellation).
-            idempotency_key: Key for idempotent requests (inline path doesn't enforce this).
 
         Returns:
             DispatchResult with success=True, task_id=None (session-scoped), and metadata.
@@ -83,18 +66,6 @@ class InlineAdapter:
             "backend": "inline",
             "assignee": assignee,
         }
-
-        # Record parameters for observability, even though inline path doesn't enforce them
-        if dry_run:
-            metadata["dry_run"] = dry_run
-        if retry:
-            metadata["retry"] = retry
-        if timeout:
-            metadata["timeout"] = timeout
-        if cancellation_token:
-            metadata["cancellation_token"] = cancellation_token
-        if idempotency_key:
-            metadata["idempotency_key"] = idempotency_key
 
         return DispatchResult(
             success=True,

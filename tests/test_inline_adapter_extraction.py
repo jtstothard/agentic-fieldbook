@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from agentic_fieldbook.dispatch import get_default_adapter
@@ -15,7 +17,6 @@ def test_default_path_is_inline_and_has_no_durable_task_id(inline):
     result = inline.dispatch(
         "run the bounded task",
         assignee="executor",
-        context="contract and acceptance evidence",
     )
 
     assert result.success is True
@@ -43,30 +44,20 @@ def test_result_capture_is_immediate_and_repeatable(inline):
     assert first.metadata == second.metadata
 
 
-def test_dry_run_and_extra_execution_context_do_not_create_durable_state(inline):
-    result = inline.dispatch(
-        "inspect the bounded task",
-        assignee="executor",
-        context="dry-run",
-        dry_run=True,
-        retry=3,
-        timeout=1,
-        cancellation_token="cancel-me",
-        idempotency_key="same-request",
+def test_inline_dispatch_exposes_only_observed_controls(inline):
+    """The experimental seam must not invent controls owned by the session."""
+    parameters = inspect.signature(inline.dispatch).parameters
+
+    assert list(parameters) == ["goal", "assignee"]
+    assert set(parameters).isdisjoint(
+        {"context", "dry_run", "retry", "timeout", "cancellation_token", "idempotency_key"}
     )
 
-    assert result.success is True
-    assert result.task_id is None
-    assert result.metadata["backend"] == "inline"
-    assert result.metadata["assignee"] == "executor"
 
-
-def test_empty_goal_remains_an_immediate_inline_outcome(inline):
+def test_legacy_empty_goal_remains_unchanged(inline):
     result = inline.dispatch("", assignee="executor")
-
     assert result.success is True
     assert result.task_id is None
-    assert result.metadata["backend"] == "inline"
 
 
 def test_failure_retry_timeout_and_cancellation_have_no_durable_recovery_state(inline):
