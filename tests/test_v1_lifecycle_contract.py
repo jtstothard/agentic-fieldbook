@@ -33,7 +33,11 @@ def test_low_risk_coding_record_can_reach_verified_with_required_evidence():
 
     record.transition(LifecycleState.PLANNED, actor="planner")
     record.transition(LifecycleState.APPROVED, actor="planner")
-    record.transition(LifecycleState.EXECUTING, actor="executor")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="executor",
+        executor_capabilities=("repo-write", "local-test"),
+    )
     record.transition(
         LifecycleState.REPORTED_COMPLETE,
         actor="executor",
@@ -69,10 +73,14 @@ def test_invalid_transitions_are_rejected():
 
 def test_verification_requires_all_declared_evidence():
     record = CanonicalTaskRecord.create(coding_contract(), task_id="task-3")
-    for state in (
-        LifecycleState.PLANNED,
-        LifecycleState.APPROVED,
+    record.transition(LifecycleState.PLANNED, actor="worker")
+    record.transition(LifecycleState.APPROVED, actor="worker")
+    record.transition(
         LifecycleState.EXECUTING,
+        actor="worker",
+        executor_capabilities=("repo-write", "local-test"),
+    )
+    for state in (
         LifecycleState.REPORTED_COMPLETE,
         LifecycleState.REVIEW,
         LifecycleState.VERIFICATION,
@@ -89,12 +97,13 @@ def test_verification_requires_all_declared_evidence():
 
 def test_reported_complete_is_a_claim_not_a_terminal_state():
     record = CanonicalTaskRecord.create(coding_contract(), task_id="task-4")
-    for state in (
-        LifecycleState.PLANNED,
-        LifecycleState.APPROVED,
+    record.transition(LifecycleState.PLANNED, actor="worker")
+    record.transition(LifecycleState.APPROVED, actor="worker")
+    record.transition(
         LifecycleState.EXECUTING,
-    ):
-        record.transition(state, actor="worker")
+        actor="worker",
+        executor_capabilities=("repo-write", "local-test"),
+    )
 
     record.transition(LifecycleState.REPORTED_COMPLETE, actor="worker")
 
@@ -130,10 +139,14 @@ def test_verification_requires_all_acceptance_criteria():
     )
     record = CanonicalTaskRecord.create(contract, task_id="task-6")
 
-    for state in (
-        LifecycleState.PLANNED,
-        LifecycleState.APPROVED,
+    record.transition(LifecycleState.PLANNED, actor="worker")
+    record.transition(LifecycleState.APPROVED, actor="worker")
+    record.transition(
         LifecycleState.EXECUTING,
+        actor="worker",
+        executor_capabilities=("repo-write", "local-test"),
+    )
+    for state in (
         LifecycleState.REPORTED_COMPLETE,
         LifecycleState.REVIEW,
         LifecycleState.VERIFICATION,
@@ -156,8 +169,13 @@ def test_verification_requires_all_acceptance_criteria():
 # Issue 2: BLOCKED/FAILED CANNOT RECOVER
 def test_blocked_can_recover_to_planned():
     record = CanonicalTaskRecord.create(coding_contract(), task_id="task-7")
-    for state in (LifecycleState.PLANNED, LifecycleState.APPROVED, LifecycleState.EXECUTING):
-        record.transition(state, actor="worker")
+    record.transition(LifecycleState.PLANNED, actor="worker")
+    record.transition(LifecycleState.APPROVED, actor="worker")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="worker",
+        executor_capabilities=("repo-write", "local-test"),
+    )
 
     record.transition(LifecycleState.BLOCKED, actor="worker", reason="awaiting approval")
     assert record.state is LifecycleState.BLOCKED
@@ -169,8 +187,13 @@ def test_blocked_can_recover_to_planned():
 
 def test_failed_can_recover_to_planned():
     record = CanonicalTaskRecord.create(coding_contract(), task_id="task-8")
-    for state in (LifecycleState.PLANNED, LifecycleState.APPROVED, LifecycleState.EXECUTING):
-        record.transition(state, actor="worker")
+    record.transition(LifecycleState.PLANNED, actor="worker")
+    record.transition(LifecycleState.APPROVED, actor="worker")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="worker",
+        executor_capabilities=("repo-write", "local-test"),
+    )
 
     record.transition(LifecycleState.FAILED, actor="worker", reason="implementation failed")
     assert record.state is LifecycleState.FAILED
@@ -187,7 +210,11 @@ def test_invalid_side_transitions_rejected():
     # VERIFIED is terminal, cannot go to side states
     record.transition(LifecycleState.PLANNED, actor="planner")
     record.transition(LifecycleState.APPROVED, actor="planner")
-    record.transition(LifecycleState.EXECUTING, actor="executor")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="executor",
+        executor_capabilities=("repo-write", "local-test"),
+    )
     record.transition(
         LifecycleState.REPORTED_COMPLETE,
         actor="executor",
@@ -301,8 +328,13 @@ def test_deserialization_validates_invariants():
 def test_reported_complete_status_is_accessible():
     """Test that reported_complete status can be tracked as stage output."""
     record = CanonicalTaskRecord.create(coding_contract(), task_id="task-14")
-    for state in (LifecycleState.PLANNED, LifecycleState.APPROVED, LifecycleState.EXECUTING):
+    for state in (LifecycleState.PLANNED, LifecycleState.APPROVED):
         record.transition(state, actor="worker")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="worker",
+        executor_capabilities=("repo-write", "local-test"),
+    )
 
     record.transition(LifecycleState.REPORTED_COMPLETE, actor="executor")
     assert record.state is LifecycleState.REPORTED_COMPLETE
@@ -327,10 +359,14 @@ def test_medium_high_risk_rejects_self_verification():
         required_evidence=("evidence-1",),
     )
     record = CanonicalTaskRecord.create(medium_contract, task_id="task-15")
-    for state in (
-        LifecycleState.PLANNED,
-        LifecycleState.APPROVED,
+    for state in (LifecycleState.PLANNED, LifecycleState.APPROVED):
+        record.transition(state, actor="same-actor")
+    record.transition(
         LifecycleState.EXECUTING,
+        actor="same-actor",
+        executor_capabilities=("write",),
+    )
+    for state in (
         LifecycleState.REPORTED_COMPLETE,
         LifecycleState.REVIEW,
         LifecycleState.VERIFICATION,
@@ -361,7 +397,11 @@ def test_high_risk_rejects_self_verification():
     record.transition(LifecycleState.PLANNED, actor="planner")
     # High-risk requires independent approver
     record.transition(LifecycleState.APPROVED, actor="approver", reason="Human approval")
-    record.transition(LifecycleState.EXECUTING, actor="executor")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="executor",
+        executor_capabilities=("write",),
+    )
     for state in (
         LifecycleState.REPORTED_COMPLETE,
         LifecycleState.REVIEW,
@@ -395,10 +435,14 @@ def test_low_risk_allows_self_verification():
         required_evidence=("evidence-1",),
     )
     record = CanonicalTaskRecord.create(low_contract, task_id="task-17")
-    for state in (
-        LifecycleState.PLANNED,
-        LifecycleState.APPROVED,
+    for state in (LifecycleState.PLANNED, LifecycleState.APPROVED):
+        record.transition(state, actor="same-actor")
+    record.transition(
         LifecycleState.EXECUTING,
+        actor="same-actor",
+        executor_capabilities=("write",),
+    )
+    for state in (
         LifecycleState.REPORTED_COMPLETE,
         LifecycleState.REVIEW,
         LifecycleState.VERIFICATION,

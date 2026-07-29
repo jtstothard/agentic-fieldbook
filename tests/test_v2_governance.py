@@ -215,8 +215,12 @@ def test_high_risk_requires_exact_human_approval_before_executing():
         reason="High-risk change approved after review",
     )
 
-    # Now can proceed to EXECUTING
-    record.transition(LifecycleState.EXECUTING, actor="executor")
+    # Now can proceed to EXECUTING with required capabilities
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="executor",
+        executor_capabilities=("prod-write",),
+    )
     assert record.state is LifecycleState.EXECUTING
 
     # Verify approval was recorded in governance state
@@ -230,7 +234,11 @@ def test_medium_risk_can_auto_approve():
 
     record.transition(LifecycleState.PLANNED, actor="planner")
     record.transition(LifecycleState.APPROVED, actor="planner")  # Auto-approve allowed
-    record.transition(LifecycleState.EXECUTING, actor="executor")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="executor",
+        executor_capabilities=("db-write",),
+    )
 
     assert record.state is LifecycleState.EXECUTING
 
@@ -259,7 +267,11 @@ def test_failed_high_risk_requires_rollback_evidence():
     # Progress to EXECUTING with different actors for approval
     record.transition(LifecycleState.PLANNED, actor="planner")
     record.transition(LifecycleState.APPROVED, actor="human-approver", reason="High-risk approval")
-    record.transition(LifecycleState.EXECUTING, actor="executor")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="executor",
+        executor_capabilities=("prod-write",),
+    )
 
     # Try to transition to FAILED without rollback evidence
     with pytest.raises(MissingRollbackError, match="rollback"):
@@ -277,7 +289,11 @@ def test_failed_high_risk_requires_rollback_evidence():
     )
 
     # Recover to EXECUTING, add rollback evidence, then fail
-    record.transition(LifecycleState.EXECUTING, actor="executor")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="executor",
+        executor_capabilities=("prod-write",),
+    )
     record.transition(
         LifecycleState.FAILED,
         actor="executor",
@@ -294,7 +310,11 @@ def test_partial_success_requires_rollback_verification():
     # Progress through lifecycle with different actors for approval
     record.transition(LifecycleState.PLANNED, actor="planner")
     record.transition(LifecycleState.APPROVED, actor="human-approver", reason="High-risk approval")
-    record.transition(LifecycleState.EXECUTING, actor="executor")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="executor",
+        executor_capabilities=("prod-write",),
+    )
 
     # Report completion with partial success
     record.transition(
@@ -339,7 +359,8 @@ def test_approval_recorded_in_history():
     approval_entry = [h for h in record.history if h["to"] == "approved"][0]
     assert approval_entry["actor"] == "human-approver"
     assert approval_entry["reason"] == "Approved after security review"
-    assert "timestamp" not in approval_entry  # Not yet implemented
+    assert "timestamp" in approval_entry  # Timestamps now implemented
+    assert isinstance(approval_entry["timestamp"], str)
 
 
 def test_all_transitions_record_actor_and_reason():
@@ -348,7 +369,12 @@ def test_all_transitions_record_actor_and_reason():
 
     record.transition(LifecycleState.PLANNED, actor="planner", reason="Initial plan")
     record.transition(LifecycleState.APPROVED, actor="approver", reason="Auto-approved")
-    record.transition(LifecycleState.EXECUTING, actor="executor", reason="Starting execution")
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="executor",
+        reason="Starting execution",
+        executor_capabilities=("db-write",),
+    )
     record.transition(LifecycleState.REPORTED_COMPLETE, actor="executor", reason="Complete")
 
     # Verify all history entries have actor and reason
@@ -418,6 +444,7 @@ def test_capability_check_with_sufficient_permissions():
     record.transition(
         LifecycleState.EXECUTING,
         actor="executor",
+        executor_capabilities=("db-write",),
         # Capability check would pass here
     )
 
@@ -457,7 +484,12 @@ def test_high_risk_enforces_strictest_controls():
     )
 
     # Progress to verification
-    for state in (LifecycleState.EXECUTING, LifecycleState.REPORTED_COMPLETE, LifecycleState.REVIEW, LifecycleState.VERIFICATION):
+    record.transition(
+        LifecycleState.EXECUTING,
+        actor="worker",
+        executor_capabilities=("prod-write",),
+    )
+    for state in (LifecycleState.REPORTED_COMPLETE, LifecycleState.REVIEW, LifecycleState.VERIFICATION):
         record.transition(state, actor="worker")
 
     # High risk requires independent verification
