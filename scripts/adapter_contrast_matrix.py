@@ -36,7 +36,7 @@ import sys
 if sys_path_add not in sys.path:
     sys.path.insert(0, sys_path_add)
 
-from agentic_fieldbook.dispatch import InlineAdapter, DispatchResult, DispatchStatus
+from agentic_fieldbook.inline_adapter_contract import InlineAdapterContract
 from agentic_fieldbook.kanban_adapter import KanbanAdapter, KanbanAdapterError
 
 
@@ -95,7 +95,7 @@ class InlineAdapterRunner:
     """Runner for inline adapter scenarios."""
     
     def __init__(self):
-        self.adapter = InlineAdapter()
+        self.adapter = InlineAdapterContract()
         self.last_task_id: str | None = None
     
     def scenario_create_dispatch(self) -> ScenarioOutcome:

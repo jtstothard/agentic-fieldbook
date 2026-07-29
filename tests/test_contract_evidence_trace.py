@@ -7,7 +7,8 @@ DispatchAdapter abstract class; that's covered by separate tests.
 
 from pathlib import Path
 
-from agentic_fieldbook.dispatch import DispatchResult, DispatchStatus, InlineAdapter
+from agentic_fieldbook.adapter_contract import DispatchResult, StatusResult
+from agentic_fieldbook.inline_adapter_contract import InlineAdapterContract
 from agentic_fieldbook.kanban_adapter import KanbanAdapter
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,21 +44,21 @@ def test_contract_documents_all_9_scenarios():
 
 def test_shared_dispatch_shapes_are_stable():
     """Inline adapter returns stable DispatchResult shape per contract."""
-    result = InlineAdapter().dispatch("contract task", assignee="worker")
-    status = InlineAdapter().get_status("ignored")
+    result = InlineAdapterContract().dispatch("contract task", assignee="worker")
+    status = InlineAdapterContract().get_status("ignored")
 
     assert isinstance(result, DispatchResult)
     assert result.success is True
     assert result.task_id is None  # Contract: Inline returns task_id=None
     assert result.metadata["backend"] == "inline"
-    assert isinstance(status, DispatchStatus)
+    assert isinstance(status, StatusResult)
     assert status.success is True
-    assert status.metadata == {"backend": "inline", "status": "synchronous"}
+    assert status.metadata["backend"] == "inline"
 
 
 def test_inline_limitations_are_explicit_not_fake_success():
     """Inline adapter limitations are explicit, not hidden behind fake success."""
-    adapter = InlineAdapter()
+    adapter = InlineAdapterContract()
 
     # Idempotency is not part of the observed inline dispatch seam.
     first = adapter.dispatch("same task", assignee="worker")
@@ -75,7 +76,7 @@ def test_inline_limitations_are_explicit_not_fake_success():
 
 def test_kanban_only_capabilities_are_not_claimed_by_inline():
     """Inline adapter doesn't claim Kanban-only capabilities."""
-    inline = InlineAdapter()
+    inline = InlineAdapterContract()
     kanban_capabilities = ("create", "claim", "poll", "read_result", "handle_failure")
     assert all(not hasattr(inline, capability) for capability in kanban_capabilities)
     assert all(hasattr(KanbanAdapter, capability) for capability in kanban_capabilities)

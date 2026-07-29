@@ -68,7 +68,7 @@ This document traces every element of the v0.3.0 adapter contract to either:
 - `ttl`: Time-to-live for the claim (observed in KanbanAdapter.claim())
 
 **Inline behavior:**
-- Raises `UnsupportedOperationError` (no claim lifecycle) - docs/adapter-contrast-matrix.md:199
+- Absent/not exposed (no claim lifecycle) - docs/adapter-contrast-matrix.md:199
 
 **Kanban behavior:**
 - Returns `ClaimResult` with status after claiming
