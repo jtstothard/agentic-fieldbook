@@ -63,15 +63,40 @@ class Policy(ApproverPolicy):
 
 class Store(ApprovalStore):
     def __init__(self):
-        self.consumed = set()
+        self.consumed_nonces = set()
+        self.consumed_receipt_ids = set()
+        self.consumed_request_ids = set()
         self.events = []
+        self.lease_events = []
 
     def is_available(self): return True
     def get_request_status(self, request_id): return "approved"
+
     def reserve_and_record_verification(self, receipt_id, nonce, request_id, timestamp):
-        key = (receipt_id, nonce, request_id)
-        if key in self.consumed: return ReservationOutcome.REPLAY
-        self.consumed.add(key); self.events.append((receipt_id, request_id, timestamp)); return ReservationOutcome.RESERVED
+        if (nonce in self.consumed_nonces
+                or receipt_id in self.consumed_receipt_ids
+                or request_id in self.consumed_request_ids):
+            return ReservationOutcome.REPLAY
+        self.consumed_nonces.add(nonce)
+        self.consumed_receipt_ids.add(receipt_id)
+        self.consumed_request_ids.add(request_id)
+        self.events.append((receipt_id, request_id, timestamp))
+        return ReservationOutcome.RESERVED
+
+    def reserve_and_record_lease(self, receipt_id, nonce, request_id, action_digest,
+                                 target, capability, parameters, issued_at,
+                                 expires_at, operation_limit):
+        """Atomically reserve replay keys and commit verification plus lease audit."""
+        if (nonce in self.consumed_nonces
+                or receipt_id in self.consumed_receipt_ids
+                or request_id in self.consumed_request_ids):
+            return ReservationOutcome.REPLAY
+        self.consumed_nonces.add(nonce)
+        self.consumed_receipt_ids.add(receipt_id)
+        self.consumed_request_ids.add(request_id)
+        self.events.append((receipt_id, request_id, issued_at))
+        self.lease_events.append((receipt_id, request_id, action_digest))
+        return ReservationOutcome.RESERVED
 
 
 class FixedClock(Clock):
