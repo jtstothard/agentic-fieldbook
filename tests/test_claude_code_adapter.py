@@ -304,7 +304,7 @@ def test_dispatch_passes_constrained_cwd_and_timeout(tmp_path: Path):
         executor_capabilities=("repo-write", "local-test"), workspace_root=tmp_path,
         timeout=42, runner=runner)
     adapter.dispatch("Fix parser", assignee="claude-code")
-    assert calls[0] == {"cwd": str(tmp_path.resolve()), "timeout": 42, "env": adapter._safe_env()}
+    assert calls[0] == {"cwd": str(tmp_path.resolve()), "timeout": 42, "env": adapter._safe_env(), "netns_name": "fieldbook-test"}
 
 
 def test_timeout_persists_failed_result(tmp_path: Path):
@@ -461,6 +461,40 @@ def test_runner_receives_isolated_home_and_trusted_path(tmp_path: Path):
     adapter.dispatch("Fix parser", assignee="claude-code")
     assert observed["PATH"] == "/usr/local/bin:/usr/bin:/bin"
     assert observed["HOME"] != str(Path.home())
+
+
+def test_safe_env_includes_configured_proxy_credentials(tmp_path: Path):
+    adapter = make_test_adapter(contract=contract(), store=PortableTaskStore(tmp_path),
+        executor_capabilities=(), workspace_root=tmp_path,
+        anthropic_base_url="http://proxy.test:8318", anthropic_api_key="test-key")
+    env = adapter._safe_env(str(tmp_path))
+    assert env["ANTHROPIC_BASE_URL"] == "http://proxy.test:8318"
+    assert env["ANTHROPIC_API_KEY"] == "test-key"
+    assert adapter.allowed_egress_host == "192.168.10.252"
+    assert adapter.allowed_egress_port == 8318
+
+
+def test_run_process_enters_configured_netns_without_unshare_net(tmp_path: Path, monkeypatch):
+    observed = {}
+    monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_bwrap_path", staticmethod(lambda configured=None: "/usr/bin/bwrap"))
+    monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_executable_path", staticmethod(lambda configured: "/usr/local/bin/claude"))
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def run(command, **kwargs):
+        observed["command"] = command
+        observed["kwargs"] = kwargs
+        return Completed()
+
+    monkeypatch.setattr(subprocess, "run", run)
+    ClaudeCodeAdapter._run_process("claude", "--version", cwd=str(tmp_path), timeout=3,
+                                   env={"HOME": str(tmp_path)}, netns_name="custom-netns")
+    assert observed["command"][:4] == ["ip", "netns", "exec", "custom-netns"]
+    assert "--unshare-net" not in observed["command"]
+    assert observed["command"][-3:] == ["--", "/usr/local/bin/claude", "--version"]
 
 
 def test_bwrap_is_mandatory_and_missing_bwrap_fails_closed(tmp_path: Path, monkeypatch):

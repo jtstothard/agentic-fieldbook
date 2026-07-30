@@ -65,7 +65,12 @@ class ClaudeCodeAdapter(DispatchAdapter):
                  rollback_callback: Callable[..., Any] | None = None,
                  rollback_timeout: float = 30.0,
                  claude_command: str = "claude", workspace_root: Path | str | None = None,
-                 timeout: float = 300.0) -> None:
+                 timeout: float = 300.0,
+                 netns_name: str = "fieldbook-sandbox",
+                 allowed_egress_host: str = "192.168.10.252",
+                 allowed_egress_port: int = 8318,
+                 anthropic_base_url: str | None = None,
+                 anthropic_api_key: str | None = None) -> None:
         if workspace_root is None:
             raise ValueError("workspace_root is required")
         if timeout <= 0 or rollback_timeout <= 0:
@@ -89,6 +94,11 @@ class ClaudeCodeAdapter(DispatchAdapter):
         if not self.workspace_root.is_dir():
             raise ValueError("workspace_root must be an existing directory")
         self.timeout = timeout
+        self.netns_name = netns_name
+        self.allowed_egress_host = allowed_egress_host
+        self.allowed_egress_port = allowed_egress_port
+        self.anthropic_base_url = anthropic_base_url or "http://192.168.10.252:8318"
+        self.anthropic_api_key = anthropic_api_key or "sk-litellm-local-no-auth"
         self._validate_scope()
         self._runner = self._run_process
 
@@ -114,8 +124,8 @@ class ClaudeCodeAdapter(DispatchAdapter):
 
     @staticmethod
     def _run_process(*args: str, cwd: str | None = None, timeout: float = 300.0,
-                     env: dict[str, str] | None = None) -> tuple[int, str, str]:
-        """Run Claude inside bubblewrap; never fall back to an unconfined child."""
+                     env: dict[str, str] | None = None, netns_name: str = "fieldbook-sandbox") -> tuple[int, str, str]:
+        """Run Claude inside bubblewrap within a scoped-egress netns; never fall back to an unconfined child."""
         bwrap = ClaudeCodeAdapter._trusted_bwrap_path()
         if not bwrap or not cwd or not env:
             raise RuntimeError("bubblewrap is required for Claude execution; refusing unconfined subprocess")
@@ -125,15 +135,18 @@ class ClaudeCodeAdapter(DispatchAdapter):
         executable = ClaudeCodeAdapter._trusted_executable_path(args[0]) if args else None
         if executable is None:
             raise RuntimeError("Claude launcher must be a trusted, non-symlink executable")
-        command = [bwrap, "--clearenv", "--die-with-parent", "--unshare-net", "--new-session",
-                   "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-                   "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
-                   "--ro-bind", "/lib", "/lib", "--ro-bind", "/lib64", "/lib64",
-                   "--ro-bind", "/etc", "/etc", "--bind", cwd, cwd,
-                   "--bind", home, home, "--chdir", cwd]
+        # Build bwrap command WITHOUT --unshare-net (netns provides scoped egress)
+        bwrap_args = [bwrap, "--clearenv", "--die-with-parent", "--new-session",
+                      "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+                      "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
+                      "--ro-bind", "/lib", "/lib", "--ro-bind", "/lib64", "/lib64",
+                      "--ro-bind", "/etc", "/etc", "--bind", cwd, cwd,
+                      "--bind", home, home, "--chdir", cwd]
         for key, value in env.items():
-            command += ["--setenv", key, value]
-        command += ["--", executable] + list(args[1:])
+            bwrap_args += ["--setenv", key, value]
+        bwrap_args += ["--", executable] + list(args[1:])
+        # Wrap bwrap inside ip netns exec for scoped egress
+        command = ["ip", "netns", "exec", netns_name] + bwrap_args
         completed = subprocess.run(command, cwd=cwd, timeout=timeout, env=None,
                                    text=True, capture_output=True, check=False)
         return completed.returncode, completed.stdout, completed.stderr
@@ -364,7 +377,14 @@ class ClaudeCodeAdapter(DispatchAdapter):
     def _safe_env(self, home: str | None = None) -> dict[str, str]:
         if home is None:
             return getattr(self, "_last_safe_env", {"PATH": _TRUSTED_PATH, "HOME": "", "LANG": "C", "LC_ALL": "C"})
-        env = {"PATH": _TRUSTED_PATH, "HOME": home, "LANG": "C", "LC_ALL": "C"}
+        env = {
+            "PATH": _TRUSTED_PATH,
+            "HOME": home,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "ANTHROPIC_BASE_URL": self.anthropic_base_url,
+            "ANTHROPIC_API_KEY": self.anthropic_api_key,
+        }
         self._last_safe_env = env
         return env
 
@@ -434,7 +454,8 @@ class ClaudeCodeAdapter(DispatchAdapter):
                 "stdout_preview": self._safe_text(stdout), "started_at": started, "finished_at": finished,
                 "session_id": session_id, "contract_identity": self.contract.contract_id,
                 "contract_digest": self._contract_digest(), "capability_snapshot": list(self.executor_capabilities),
-                "environment_keys": ["PATH", "HOME", "LANG", "LC_ALL"],
+                "environment_keys": ["PATH", "HOME", "LANG", "LC_ALL",
+                                     "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"],
                 "execution_metadata": self._sanitize_metadata(execution_metadata or {})}
 
     @classmethod
@@ -571,7 +592,7 @@ class ClaudeCodeAdapter(DispatchAdapter):
         try:
             with tempfile.TemporaryDirectory(prefix="fieldbook-home-") as isolated_home:
                 env = self._safe_env(isolated_home)
-                returncode, stdout, stderr = self._runner(*args, cwd=str(self.workspace_root), timeout=self.timeout, env=env)
+                returncode, stdout, stderr = self._runner(*args, cwd=str(self.workspace_root), timeout=self.timeout, env=env, netns_name=self.netns_name)
         except subprocess.TimeoutExpired as exc:
             finished = datetime.now().astimezone().isoformat()
             record._provenance = self._provenance(args, session_id=None, started=started, finished=finished,

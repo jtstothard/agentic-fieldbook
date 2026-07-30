@@ -12,6 +12,7 @@ import pytest
 from agentic_fieldbook.lifecycle import (
     CanonicalTaskRecord,
     InvalidTransitionError,
+    MissingEvidenceError,
     MissingRollbackError,
     LifecycleState,
     TaskContract,
@@ -175,9 +176,9 @@ def test_recovered_approval_must_be_fresh():
         executor_capabilities=("prod-write", "destructive"),
     )
     
-    # Failed transition to recovery
+    # Blocked transition to recovery (FAILED is terminal in the hardened API)
     record.transition(
-        LifecycleState.FAILED,
+        LifecycleState.BLOCKED,
         actor="executor",
         evidence=[
             Evidence("rollback-evidence", "Rollback completed", "rollback-command", "0"),
@@ -258,7 +259,7 @@ def test_verification_requires_all_acceptance_criteria():
     )
     
     # Try to VERIFIED missing criteria-2 and criteria-3 - should FAIL
-    with pytest.raises(InvalidTransitionError, match="missing acceptance criteria"):
+    with pytest.raises(MissingEvidenceError, match="missing acceptance criteria"):
         record.transition(LifecycleState.VERIFIED, actor="verifier")
 
 
@@ -295,7 +296,7 @@ def test_verification_requires_all_required_evidence():
     )
     
     # Try to VERIFIED missing evidence-2 and evidence-3 - should FAIL
-    with pytest.raises(InvalidTransitionError, match="missing required evidence"):
+    with pytest.raises(MissingEvidenceError, match="missing required evidence"):
         record.transition(LifecycleState.VERIFIED, actor="verifier")
 
 
@@ -373,7 +374,12 @@ def test_all_valid_forward_transitions():
     assert record.state is LifecycleState.VERIFICATION
     
     # VERIFICATION -> VERIFIED
-    record.transition(LifecycleState.VERIFIED, actor="verifier")
+    record.transition(
+        LifecycleState.VERIFIED,
+        actor="verifier",
+        evidence=[Evidence("operation-completed", "Operation complete", "test", "0"),
+                  Evidence("operation-logs", "Logs collected", "command", "0")],
+    )
     assert record.state is LifecycleState.VERIFIED
     assert record.is_terminal
 
@@ -451,9 +457,15 @@ def test_terminal_states_cannot_transition():
     )
     record.transition(LifecycleState.REPORTED_COMPLETE, actor="executor")
     record.transition(LifecycleState.REVIEW, actor="reviewer")
-    record.transition(LifecycleState.VERIFICATION, actor="verifier")
-    record.transition(LifecycleState.VERIFIED, actor="verifier")
-    
+    record.transition(
+        LifecycleState.VERIFICATION,
+        actor="verifier",
+        evidence=[Evidence("operation-logs", "Logs collected", "command", "0")],
+    )
+    record.transition(LifecycleState.VERIFIED, actor="verifier", evidence=[
+        Evidence("operation-completed", "Operation complete", "test", "0")
+    ])
+
     assert record.is_terminal
     
     # Try to transition from VERIFIED - should FAIL
@@ -475,12 +487,12 @@ def test_evidence_passed_must_be_bool():
     )
     
     # Evidence with non-bool passed field - should FAIL
-    with pytest.raises(ValueError, match="passed must be a boolean"):
+    with pytest.raises(ValueError, match="passed must be bool"):
         record.transition(
             LifecycleState.REPORTED_COMPLETE,
             actor="executor",
             evidence=[
-                Evidence("test-evidence", "Test", "command", "passed"),  # "passed" is not bool
+                {"requirement": "test-evidence", "claim": "Test", "tool": "command", "result": "0", "passed": "passed"},
             ],
         )
 
@@ -501,7 +513,7 @@ def test_failed_evidence_can_be_included():
         LifecycleState.REPORTED_COMPLETE,
         actor="executor",
         evidence=[
-            Evidence("test-evidence", "Test failed", "command", False),  # passed=False is valid
+            Evidence("test-evidence", "Test failed", "command", "0", passed=False),
         ],
     )
     

@@ -1,0 +1,15 @@
+[Unit]
+Description=Fieldbook sandbox network namespace
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/hermes/agentic-fieldbook/systemd/fieldbook-sandbox-setup.sh
+ExecStop=/home/hermes/agentic-fieldbook/systemd/fieldbook-sandbox-teardown.sh
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
