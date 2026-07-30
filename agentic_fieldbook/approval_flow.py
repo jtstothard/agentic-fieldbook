@@ -81,8 +81,13 @@ class NativeApprovalFlow:
         except Exception:
             return self._failed()
         audience = self.broker_audience
-        # Preserve the package's contract_digest: the broker verifies it against
-        # the complete contract projection before reserving replay/lease state.
+        # NOTE: Until follow-up ticket 07 lands, the contract projection passed
+        # to the broker is the action package itself. This means contract_digest
+        # and action_digest cover the same domain (executable action fields).
+        # Governance/transport terms (broker_type, broker_endpoint,
+        # approval_channel, approval_binding, target_immutable) are NOT yet
+        # bound by either digest. Ticket 07 will wire the full TaskContract
+        # through this call so contract_digest covers those terms distinctly.
         contract = _thaw(action_package.as_mapping())
         try:
             return verify_approval_receipt(
