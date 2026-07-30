@@ -32,6 +32,9 @@ The `fieldbook-sandbox.service` unit runs root-owned installed copies at
 `/usr/local/libexec/fieldbook-sandbox-{setup,teardown}`. It must not execute the
 mutable repository source files directly; installation should copy them as root
 with mode 0755 and verify ownership before enabling the unit.
+Run `sudo systemd/install-fieldbook-sandbox.sh` from a trusted checkout, then
+`sudo systemctl daemon-reload` and enable the unit. The installer does not
+restart or mutate an active service.
 - Starts on boot (`WantedBy=multi-user.target`)
 - Type: `oneshot` with `RemainAfterExit=yes`
 
