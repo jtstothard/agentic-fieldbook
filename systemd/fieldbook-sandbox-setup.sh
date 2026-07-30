@@ -1,100 +1,109 @@
 #!/bin/bash
-# Setup script for Fieldbook sandbox network namespace
-# Creates a persistent network namespace with scoped egress to LiteLLM proxy
+# Source for the installed Fieldbook sandbox setup runtime.
+# The systemd unit must execute a root-owned copy under /usr/local/libexec.
+set -Eeuo pipefail
 
-set -e
+readonly IP=/usr/sbin/ip
+readonly IPTABLES=/usr/sbin/iptables
+readonly IP6TABLES=/usr/sbin/ip6tables
+readonly SYSCTL=/usr/sbin/sysctl
+readonly CURL=/usr/bin/curl
+readonly NETNS_NAME=fieldbook-sandbox
+readonly VETH_HOST=fb-sandbox0
+readonly VETH_NS=fb-sandbox1
+readonly HOST_IP=10.200.2.1
+readonly NS_IP=10.200.2.2
+readonly PROXY_HOST=192.168.10.252
+readonly PROXY_PORT=8318
+readonly CHAIN=FIELDBOOK_SANDBOX
+readonly NET=10.200.2.0/24
 
-NETNS_NAME="fieldbook-sandbox"
-VETH_HOST="fb-sandbox0"
-VETH_NS="fb-sandbox1"
-HOST_IP="10.200.2.1"
-NS_IP="10.200.2.2"
-HOST_IFACE="eth0"
-PROXY_HOST="192.168.10.252"
-PROXY_PORT="8318"
+created_netns=0
+created_veth=0
+rules_installed=0
 
-# Detect if running as root (no need for sudo)
-SUDO=""
-if [ "$EUID" -ne 0 ]; then
-    SUDO="sudo"
+fail() { printf 'fieldbook sandbox setup failed: %s\n' "$*" >&2; exit 1; }
+cleanup() {
+  local status=$?
+  trap - EXIT
+  if (( status != 0 )); then
+    "$IPTABLES" -D FORWARD -j "$CHAIN" 2>/dev/null || true
+    "$IPTABLES" -F "$CHAIN" 2>/dev/null || true
+    "$IPTABLES" -X "$CHAIN" 2>/dev/null || true
+    "$IP6TABLES" -D FORWARD -j "$CHAIN" 2>/dev/null || true
+    "$IP6TABLES" -F "$CHAIN" 2>/dev/null || true
+    "$IP6TABLES" -X "$CHAIN" 2>/dev/null || true
+    "$IP" link del "$VETH_HOST" 2>/dev/null || true
+    "$IP" netns del "$NETNS_NAME" 2>/dev/null || true
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+
+(( EUID == 0 )) || fail "must run as root"
+for tool in "$IP" "$IPTABLES" "$IP6TABLES" "$SYSCTL" "$CURL"; do
+  [[ -x "$tool" ]] || fail "required trusted tool missing: $tool"
+done
+
+# Remove only our owned state, tolerating partial previous setup.
+"$IPTABLES" -D FORWARD -j "$CHAIN" 2>/dev/null || true
+"$IPTABLES" -F "$CHAIN" 2>/dev/null || true
+"$IPTABLES" -X "$CHAIN" 2>/dev/null || true
+"$IP6TABLES" -D FORWARD -j "$CHAIN" 2>/dev/null || true
+"$IP6TABLES" -F "$CHAIN" 2>/dev/null || true
+"$IP6TABLES" -X "$CHAIN" 2>/dev/null || true
+"$IP" link del "$VETH_HOST" 2>/dev/null || true
+"$IP" netns del "$NETNS_NAME" 2>/dev/null || true
+
+# Resolve the actual default-route interface and reject an ambiguous topology.
+mapfile -t routes < <("$IP" -o -4 route show default)
+(( ${#routes[@]} == 1 )) || fail "expected exactly one IPv4 default route"
+uplink="${routes[0]#* dev }"
+uplink="${uplink%% *}"
+[[ -n "$uplink" && "$uplink" != "dev" && "$uplink" != "via" ]] || fail "could not parse default-route interface"
+"$IP" link show dev "$uplink" >/dev/null || fail "default-route interface is unavailable"
+
+"$IP" netns add "$NETNS_NAME"
+created_netns=1
+"$IP" link add "$VETH_HOST" type veth peer name "$VETH_NS"
+created_veth=1
+"$IP" link set "$VETH_NS" netns "$NETNS_NAME"
+"$IP" addr add "$HOST_IP/24" dev "$VETH_HOST"
+"$IP" link set "$VETH_HOST" up
+"$IP" -n "$NETNS_NAME" addr add "$NS_IP/24" dev "$VETH_NS"
+"$IP" -n "$NETNS_NAME" link set "$VETH_NS" up
+"$IP" -n "$NETNS_NAME" link set lo up
+"$IP" -n "$NETNS_NAME" route add default via "$HOST_IP"
+"$SYSCTL" -w net.ipv4.ip_forward=1 >/dev/null
+
+# Dedicated chain: only the proxy flow and established return traffic are allowed.
+"$IPTABLES" -N "$CHAIN"
+"$IPTABLES" -A FORWARD -j "$CHAIN"
+"$IPTABLES" -A "$CHAIN" -i "$VETH_HOST" -o "$uplink" -s "$NET" -d "$PROXY_HOST" -p tcp --dport "$PROXY_PORT" -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+"$IPTABLES" -A "$CHAIN" -i "$VETH_HOST" -o "$uplink" -s "$NET" -j DROP
+"$IPTABLES" -A "$CHAIN" -o "$VETH_HOST" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+"$IPTABLES" -A "$CHAIN" -j DROP
+# IPv6 must never become an alternate path.
+"$IP6TABLES" -N "$CHAIN"
+"$IP6TABLES" -A FORWARD -j "$CHAIN"
+"$IP6TABLES" -A "$CHAIN" -i "$VETH_HOST" -j DROP
+"$IP6TABLES" -A "$CHAIN" -o "$VETH_HOST" -j DROP
+"$IP6TABLES" -A "$CHAIN" -j DROP
+"$IPTABLES" -t nat -A POSTROUTING -s "$NET" -o "$uplink" -j MASQUERADE
+rules_installed=1
+
+# Verify exact policy, route, readiness, and a blocked alternate destination.
+"$IP" -n "$NETNS_NAME" route get "$PROXY_HOST" | grep -Eq "dev $VETH_NS"
+"$IPTABLES" -S "$CHAIN" | grep -F -- "-d $PROXY_HOST -p tcp --dport $PROXY_PORT" >/dev/null
+"$IPTABLES" -S "$CHAIN" | grep -F -- "-i $VETH_HOST -o $uplink" >/dev/null
+"$IP6TABLES" -S "$CHAIN" | grep -F -- "-i $VETH_HOST" >/dev/null
+"$IP" netns exec "$NETNS_NAME" "$CURL" --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+  "http://${PROXY_HOST}:${PROXY_PORT}/health/readiness" >/dev/null \
+  || fail "proxy readiness check failed"
+if "$IP" netns exec "$NETNS_NAME" "$CURL" --connect-timeout 3 --max-time 5 \
+    --silent --output /dev/null http://example.com/; then
+  fail "non-proxy egress is reachable"
 fi
 
-echo "Setting up Fieldbook sandbox network namespace: $NETNS_NAME"
-
-# Remove existing netns if it exists (for idempotent runs)
-if $SUDO ip netns list | grep -q "^${NETNS_NAME}$"; then
-    echo "Removing existing netns: $NETNS_NAME"
-    $SUDO ip netns delete "$NETNS_NAME"
-fi
-
-# Remove existing veth pair if it exists
-if ip link show "$VETH_HOST" &>/dev/null; then
-    echo "Removing existing veth pair: $VETH_HOST"
-    $SUDO ip link delete "$VETH_HOST"
-fi
-
-# Create network namespace
-$SUDO ip netns add "$NETNS_NAME"
-
-# Create veth pair
-$SUDO ip link add "$VETH_HOST" type veth peer name "$VETH_NS"
-
-# Move one end to netns
-$SUDO ip link set "$VETH_NS" netns "$NETNS_NAME"
-
-# Configure host side
-$SUDO ip addr add "$HOST_IP/24" dev "$VETH_HOST"
-$SUDO ip link set "$VETH_HOST" up
-
-# Configure netns side
-$SUDO ip netns exec "$NETNS_NAME" ip addr add "$NS_IP/24" dev "$VETH_NS"
-$SUDO ip netns exec "$NETNS_NAME" ip link set "$VETH_NS" up
-$SUDO ip netns exec "$NETNS_NAME" ip link set lo up
-
-# Set default route in netns via host
-$SUDO ip netns exec "$NETNS_NAME" ip route add default via "$HOST_IP"
-
-# Enable IP forwarding on host
-$SUDO sysctl -w net.ipv4.ip_forward=1
-
-# Flush any existing rules for our veth to avoid duplicates
-$SUDO iptables -D FORWARD -i "$VETH_HOST" -o "$HOST_IFACE" -d "$PROXY_HOST" -p tcp --dport "$PROXY_PORT" -j ACCEPT 2>/dev/null || true
-$SUDO iptables -D FORWARD -o "$VETH_HOST" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-$SUDO iptables -D FORWARD -i "$VETH_HOST" -o "$HOST_IFACE" -s "10.200.2.0/24" -j REJECT 2>/dev/null || true
-$SUDO iptables -t nat -D POSTROUTING -s "10.200.2.0/24" -j MASQUERADE 2>/dev/null || true
-
-# Add iptables rules for scoped egress (allow only proxy host:port)
-$SUDO iptables -A FORWARD -i "$VETH_HOST" -o "$HOST_IFACE" -d "$PROXY_HOST" -p tcp --dport "$PROXY_PORT" -j ACCEPT
-$SUDO iptables -A FORWARD -o "$VETH_HOST" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-# Explicitly reject every other routed destination. This is required even when
-# the host FORWARD policy is ACCEPT.
-$SUDO iptables -A FORWARD -i "$VETH_HOST" -o "$HOST_IFACE" -s "10.200.2.0/24" -j REJECT
-
-# Add NAT masquerade for outbound traffic
-$SUDO iptables -t nat -A POSTROUTING -s "10.200.2.0/24" -j MASQUERADE
-
-# Test connectivity to proxy
-echo "Testing connectivity to proxy $PROXY_HOST:$PROXY_PORT..."
-if $SUDO ip netns exec "$NETNS_NAME" curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://${PROXY_HOST}:${PROXY_PORT}/health/readiness" | grep -q "200"; then
-    echo "✓ Proxy connectivity verified"
-else
-    echo "✗ Proxy connectivity test failed"
-    echo "Note: /health/readiness may not exist on all proxy deployments"
-    echo "Attempting basic TCP connection test..."
-    if $SUDO ip netns exec "$NETNS_NAME" timeout 3 bash -c "</dev/tcp/${PROXY_HOST}/${PROXY_PORT}" 2>/dev/null; then
-        echo "✓ TCP connection to proxy succeeded"
-    else
-        echo "✗ TCP connection to proxy failed"
-    fi
-fi
-
-# Test that other hosts are blocked
-echo "Testing that other hosts are blocked..."
-if $SUDO ip netns exec "$NETNS_NAME" timeout 3 curl -s -o /dev/null -w "%{http_code}" "http://example.com:80" 2>/dev/null | grep -v "000\|timed out"; then
-    echo "⚠ Warning: Non-proxy host reachable - egress may not be properly scoped"
-else
-    echo "✓ Non-proxy host blocked as expected"
-fi
-
-echo "Setup complete: $NETNS_NAME (veth: $VETH_HOST <-> $VETH_NS, netns IP: $NS_IP)"
-echo "Scoped egress: $PROXY_HOST:$PROXY_PORT only"
+trap - EXIT
+printf 'Fieldbook sandbox ready: %s via %s (%s:%s only)\n' "$NETNS_NAME" "$uplink" "$PROXY_HOST" "$PROXY_PORT"

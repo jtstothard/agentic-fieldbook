@@ -13,25 +13,25 @@ not part of the release findings.
 ## Scoped egress network namespace
 
 The adapter runs Claude inside a persistent network namespace (`fieldbook-sandbox`)
-with iptables-scoped egress that allows ONLY the LiteLLM proxy at
-`192.168.10.252:8318`. This replaces the previous `bwrap --unshare-net` which
-blocked ALL network including loopback and LAN.
+with a dedicated, verified iptables chain that allows ONLY the LiteLLM proxy at
+`192.168.10.252:8318`. Setup fails closed unless proxy readiness and blocked
+non-proxy egress both pass. IPv6 forwarding is explicitly dropped.
 
 ### Network architecture
 
 - **Netns name:** `fieldbook-sandbox` (managed by systemd, persists across reboot)
 - **Veth pair:** `fb-sandbox0` (host, 10.200.2.1/24) <-> `fb-sandbox1` (netns, 10.200.2.2/24)
-- **Scoped egress rules:**
-  - FORWARD: `-i fb-sandbox0 -o eth0 -d 192.168.10.252 -p tcp --dport 8318 -j ACCEPT`
-  - FORWARD: `-o fb-sandbox0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`
-  - NAT POSTROUTING: `-s 10.200.2.0/24 -j MASQUERADE`
+- **Scoped egress rules:** a dedicated `FIELDBOOK_SANDBOX` chain resolves the
+  actual single IPv4 default-route interface, allows only proxy TCP/8318, drops
+  all other IPv4 flows, and drops all IPv6 flows for the veth.
 - **Sysctl:** `net.ipv4.ip_forward=1` on host
 
 ### Systemd management
 
-The `fieldbook-sandbox.service` unit:
-- Runs `systemd/fieldbook-sandbox-setup.sh` on start
-- Runs `systemd/fieldbook-sandbox-teardown.sh` on stop
+The `fieldbook-sandbox.service` unit runs root-owned installed copies at
+`/usr/local/libexec/fieldbook-sandbox-{setup,teardown}`. It must not execute the
+mutable repository source files directly; installation should copy them as root
+with mode 0755 and verify ownership before enabling the unit.
 - Starts on boot (`WantedBy=multi-user.target`)
 - Type: `oneshot` with `RemainAfterExit=yes`
 
@@ -71,11 +71,10 @@ testing or alternative deployments. The `_run_process` static method wraps the
 bwrap command inside `ip netns exec <netns_name>` to execute within the scoped
 egress namespace.
 
-The allowlisted destination is also exposed as `allowed_egress_host` and
-`allowed_egress_port` (default `192.168.10.252` and `8318`) so deployments can
-keep adapter configuration aligned with their managed namespace rules. The
-systemd scripts must be changed together with these values; the adapter does not
-install or widen firewall rules at runtime.
+The allowlisted destination is fixed to `192.168.10.252:8318` and the managed
+namespace names are fixed to `fieldbook-sandbox` (or `fieldbook-test` for the
+test seam). The adapter rejects endpoint, URL, and namespace drift rather than
+treating these constructor values as decorative configuration.
 
 ### Egress verification
 
@@ -84,11 +83,16 @@ Verify scoped egress is working:
 # Should succeed (proxy reachable)
 sudo ip netns exec fieldbook-sandbox curl http://192.168.10.252:8318/health/readiness
 
-# Should fail (other hosts blocked)
-sudo ip netns exec fieldbook-sandbox curl http://example.com
+# Should fail (other hosts blocked; setup itself checks this)
+sudo ip netns exec fieldbook-sandbox curl --max-time 5 http://example.com
 ```
 
 ## Workspace snapshots
+
+Repository tests use a runner seam and monkeypatch trusted tool discovery; they
+prove command construction and fail-closed decisions but cannot prove a live
+kernel netns, iptables, route, proxy, or systemd installation. A deployment must
+install root-owned runtime scripts and separately perform the live checks above.
 
 Workspace snapshots are supplemental evidence, not enforcement. They record
 portable file type, mode, uid/gid, and file digest metadata for durable entries,

@@ -13,6 +13,7 @@ import queue
 import subprocess
 import tempfile
 import uuid
+from urllib.parse import urlparse
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,9 @@ _SECRET_VALUE = re.compile(r"(?i)(?:bearer\s+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-
 _TRUSTED_PATH = "/usr/local/bin:/usr/bin:/bin"
 _METADATA_KEYS = frozenset({"type", "subtype", "is_error", "session_id", "duration_ms", "num_turns", "total_cost_usd", "usage", "model"})
 _MAX_METADATA_TOTAL = 8192
+_TRUSTED_IP = "/usr/sbin/ip"
+_SANDBOX_NETNS = "fieldbook-sandbox"
+_SANDBOX_TEST_NETNS = "fieldbook-test"
 
 
 def _rollback_worker(callback: Callable[..., Any], record: CanonicalTaskRecord,
@@ -98,7 +102,8 @@ class ClaudeCodeAdapter(DispatchAdapter):
         self.allowed_egress_host = allowed_egress_host
         self.allowed_egress_port = allowed_egress_port
         self.anthropic_base_url = anthropic_base_url or "http://192.168.10.252:8318"
-        self.anthropic_api_key = anthropic_api_key or "sk-litellm-local-no-auth"
+        self.anthropic_api_key = anthropic_api_key or "«redacted:sk-…»"
+        self._validate_network_policy()
         self._validate_scope()
         self._runner = self._run_process
 
@@ -122,10 +127,23 @@ class ClaudeCodeAdapter(DispatchAdapter):
             except ValueError as exc:
                 raise ValueError("contract scope/exclusions must remain within the workspace") from exc
 
+    def _validate_network_policy(self) -> None:
+        """Reject configuration which cannot be enforced by the installed netns."""
+        if self.netns_name not in {_SANDBOX_NETNS, _SANDBOX_TEST_NETNS}:
+            raise ValueError("netns_name must identify the managed Fieldbook sandbox")
+        if self.allowed_egress_host != "192.168.10.252" or self.allowed_egress_port != 8318:
+            raise ValueError("egress policy must match the managed LiteLLM endpoint")
+        parsed = urlparse(self.anthropic_base_url)
+        if (parsed.scheme != "http" or parsed.hostname != self.allowed_egress_host
+                or parsed.port != self.allowed_egress_port or parsed.path not in ("", "/")):
+            raise ValueError("anthropic_base_url must exactly match the managed proxy endpoint")
+
     @staticmethod
     def _run_process(*args: str, cwd: str | None = None, timeout: float = 300.0,
                      env: dict[str, str] | None = None, netns_name: str = "fieldbook-sandbox") -> tuple[int, str, str]:
         """Run Claude inside bubblewrap within a scoped-egress netns; never fall back to an unconfined child."""
+        if netns_name not in {_SANDBOX_NETNS, _SANDBOX_TEST_NETNS}:
+            raise RuntimeError("refusing execution in an unmanaged network namespace")
         bwrap = ClaudeCodeAdapter._trusted_bwrap_path()
         if not bwrap or not cwd or not env:
             raise RuntimeError("bubblewrap is required for Claude execution; refusing unconfined subprocess")
@@ -140,16 +158,41 @@ class ClaudeCodeAdapter(DispatchAdapter):
                       "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                       "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
                       "--ro-bind", "/lib", "/lib", "--ro-bind", "/lib64", "/lib64",
-                      "--ro-bind", "/etc", "/etc", "--bind", cwd, cwd,
+                      "--bind", cwd, cwd,
                       "--bind", home, home, "--chdir", cwd]
+        # Do not expose the host's complete /etc. These are the minimum files
+        # needed by common Claude/libcurl installations; absent optional files
+        # are simply omitted so the command remains portable.
+        for path in ("/etc/hosts", "/etc/resolv.conf", "/etc/nsswitch.conf",
+                     "/etc/passwd", "/etc/group", "/etc/ssl", "/etc/ca-certificates"):
+            if Path(path).exists():
+                bwrap_args += ["--ro-bind", path, path]
         for key, value in env.items():
             bwrap_args += ["--setenv", key, value]
         bwrap_args += ["--", executable] + list(args[1:])
         # Wrap bwrap inside ip netns exec for scoped egress
-        command = ["ip", "netns", "exec", netns_name] + bwrap_args
-        completed = subprocess.run(command, cwd=cwd, timeout=timeout, env=None,
+        ip = ClaudeCodeAdapter._trusted_ip_path()
+        if ip is None:
+            raise RuntimeError("trusted ip tool is required for sandbox execution")
+        command = [ip, "netns", "exec", netns_name] + bwrap_args
+        completed = subprocess.run(command, cwd=cwd, timeout=timeout,
+                                   env={"PATH": _TRUSTED_PATH, "LANG": "C", "LC_ALL": "C"},
                                    text=True, capture_output=True, check=False)
         return completed.returncode, completed.stdout, completed.stderr
+
+    @staticmethod
+    def _trusted_ip_path() -> str | None:
+        import stat
+        path = Path(_TRUSTED_IP)
+        try:
+            info = path.stat()
+        except OSError:
+            return None
+        if (path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or not info.st_mode & stat.S_IXUSR):
+            return None
+        return str(path)
 
     @staticmethod
     def _trusted_bwrap_path(configured: str | None = None) -> str | None:

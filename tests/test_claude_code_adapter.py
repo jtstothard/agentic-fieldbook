@@ -466,18 +466,33 @@ def test_runner_receives_isolated_home_and_trusted_path(tmp_path: Path):
 def test_safe_env_includes_configured_proxy_credentials(tmp_path: Path):
     adapter = make_test_adapter(contract=contract(), store=PortableTaskStore(tmp_path),
         executor_capabilities=(), workspace_root=tmp_path,
-        anthropic_base_url="http://proxy.test:8318", anthropic_api_key="test-key")
+        anthropic_base_url="http://192.168.10.252:8318", anthropic_api_key="test-key")
     env = adapter._safe_env(str(tmp_path))
-    assert env["ANTHROPIC_BASE_URL"] == "http://proxy.test:8318"
+    assert env["ANTHROPIC_BASE_URL"] == "http://192.168.10.252:8318"
     assert env["ANTHROPIC_API_KEY"] == "test-key"
     assert adapter.allowed_egress_host == "192.168.10.252"
     assert adapter.allowed_egress_port == 8318
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"netns_name": "attacker-netns"},
+    {"allowed_egress_host": "127.0.0.1"},
+    {"allowed_egress_port": 443},
+    {"anthropic_base_url": "http://example.com:8318"},
+    {"anthropic_base_url": "https://192.168.10.252:8318"},
+    {"anthropic_base_url": "http://192.168.10.252:8318/v1"},
+])
+def test_network_policy_configuration_cannot_drift_from_managed_sandbox(tmp_path: Path, kwargs):
+    with pytest.raises(ValueError, match="(managed|exactly match)"):
+        make_test_adapter(contract=contract(), store=PortableTaskStore(tmp_path),
+                          executor_capabilities=(), workspace_root=tmp_path, **kwargs)
 
 
 def test_run_process_enters_configured_netns_without_unshare_net(tmp_path: Path, monkeypatch):
     observed = {}
     monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_bwrap_path", staticmethod(lambda configured=None: "/usr/bin/bwrap"))
     monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_executable_path", staticmethod(lambda configured: "/usr/local/bin/claude"))
+    monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_ip_path", staticmethod(lambda: "/usr/sbin/ip"))
 
     class Completed:
         returncode = 0
@@ -491,10 +506,19 @@ def test_run_process_enters_configured_netns_without_unshare_net(tmp_path: Path,
 
     monkeypatch.setattr(subprocess, "run", run)
     ClaudeCodeAdapter._run_process("claude", "--version", cwd=str(tmp_path), timeout=3,
-                                   env={"HOME": str(tmp_path)}, netns_name="custom-netns")
-    assert observed["command"][:4] == ["ip", "netns", "exec", "custom-netns"]
+                                   env={"HOME": str(tmp_path)}, netns_name="fieldbook-test")
+    assert observed["command"][:4] == ["/usr/sbin/ip", "netns", "exec", "fieldbook-test"]
     assert "--unshare-net" not in observed["command"]
     assert observed["command"][-3:] == ["--", "/usr/local/bin/claude", "--version"]
+
+
+def test_run_process_fails_closed_without_trusted_ip(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_bwrap_path", staticmethod(lambda configured=None: "/usr/bin/bwrap"))
+    monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_executable_path", staticmethod(lambda configured: "/usr/bin/true"))
+    monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_ip_path", staticmethod(lambda: None))
+    with pytest.raises(RuntimeError, match="trusted ip"):
+        ClaudeCodeAdapter._run_process("claude", cwd=str(tmp_path), timeout=1,
+                                       env={"HOME": str(tmp_path), "PATH": "/usr/bin"})
 
 
 def test_bwrap_is_mandatory_and_missing_bwrap_fails_closed(tmp_path: Path, monkeypatch):
@@ -582,6 +606,7 @@ def test_bwrap_command_clears_environment_and_rejects_symlink_launcher(tmp_path:
     assert ClaudeCodeAdapter._trusted_executable_path(str(link)) is None
     monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_bwrap_path", staticmethod(lambda configured=None: "/usr/bin/bwrap"))
     monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_executable_path", staticmethod(lambda configured: "/usr/bin/true"))
+    monkeypatch.setattr(ClaudeCodeAdapter, "_trusted_ip_path", staticmethod(lambda: "/usr/sbin/ip"))
     seen = {}
     monkeypatch.setattr(subprocess, "run", lambda command, **kwargs: seen.update(command=command) or type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
     ClaudeCodeAdapter._run_process("claude", cwd=str(tmp_path), timeout=1,

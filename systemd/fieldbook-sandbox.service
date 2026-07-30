@@ -6,8 +6,10 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/home/hermes/agentic-fieldbook/systemd/fieldbook-sandbox-setup.sh
-ExecStop=/home/hermes/agentic-fieldbook/systemd/fieldbook-sandbox-teardown.sh
+# These paths are populated by the privileged installation step as root-owned
+# 0755 files; never execute mutable repository files from a root unit.
+ExecStart=/usr/local/libexec/fieldbook-sandbox-setup
+ExecStop=/usr/local/libexec/fieldbook-sandbox-teardown
 TimeoutStartSec=60
 TimeoutStopSec=30
 

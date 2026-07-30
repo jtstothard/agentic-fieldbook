@@ -1,37 +1,28 @@
 #!/bin/bash
-# Teardown script for Fieldbook sandbox network namespace
+# Source for the installed Fieldbook sandbox teardown runtime.
+set -Eeuo pipefail
+readonly IP=/usr/sbin/ip
+readonly IPTABLES=/usr/sbin/iptables
+readonly IP6TABLES=/usr/sbin/ip6tables
+readonly NETNS_NAME=fieldbook-sandbox
+readonly VETH_HOST=fb-sandbox0
+readonly CHAIN=FIELDBOOK_SANDBOX
+readonly NET=10.200.2.0/24
 
-set -e
-
-NETNS_NAME="fieldbook-sandbox"
-VETH_HOST="fb-sandbox0"
-VETH_NS="fb-sandbox1"
-HOST_IP="10.200.2.1"
-PROXY_HOST="192.168.10.252"
-PROXY_PORT="8318"
-
-# Detect if running as root (no need for sudo)
-SUDO=""
-if [ "$EUID" -ne 0 ]; then
-    SUDO="sudo"
+(( EUID == 0 )) || { printf 'must run as root\n' >&2; exit 1; }
+# Delete only the dedicated chain and objects owned by this sandbox.
+"$IPTABLES" -D FORWARD -j "$CHAIN" 2>/dev/null || true
+mapfile -t routes < <("$IP" -o -4 route show default)
+if (( ${#routes[@]} == 1 )); then
+  uplink="${routes[0]#* dev }"
+  uplink="${uplink%% *}"
+  "$IPTABLES" -t nat -D POSTROUTING -s "$NET" -o "$uplink" -j MASQUERADE 2>/dev/null || true
 fi
-
-echo "Tearing down Fieldbook sandbox network namespace: $NETNS_NAME"
-
-# Remove iptables rules
-$SUDO iptables -D FORWARD -i "$VETH_HOST" -o eth0 -d "$PROXY_HOST" -p tcp --dport "$PROXY_PORT" -j ACCEPT 2>/dev/null || true
-$SUDO iptables -D FORWARD -o "$VETH_HOST" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-$SUDO iptables -D FORWARD -i "$VETH_HOST" -o eth0 -s "10.200.2.0/24" -j REJECT 2>/dev/null || true
-$SUDO iptables -t nat -D POSTROUTING -s "10.200.2.0/24" -j MASQUERADE 2>/dev/null || true
-
-# Delete veth pair
-if ip link show "$VETH_HOST" &>/dev/null; then
-    $SUDO ip link delete "$VETH_HOST"
-fi
-
-# Delete netns
-if $SUDO ip netns list | grep -q "^${NETNS_NAME}$"; then
-    $SUDO ip netns delete "$NETNS_NAME"
-fi
-
-echo "Teardown complete"
+"$IPTABLES" -F "$CHAIN" 2>/dev/null || true
+"$IPTABLES" -X "$CHAIN" 2>/dev/null || true
+"$IP6TABLES" -D FORWARD -j "$CHAIN" 2>/dev/null || true
+"$IP6TABLES" -F "$CHAIN" 2>/dev/null || true
+"$IP6TABLES" -X "$CHAIN" 2>/dev/null || true
+"$IP" link del "$VETH_HOST" 2>/dev/null || true
+"$IP" netns del "$NETNS_NAME" 2>/dev/null || true
+printf 'Fieldbook sandbox teardown complete\n'
