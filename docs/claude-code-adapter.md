@@ -63,14 +63,16 @@ adapter = ClaudeCodeAdapter(
     store=store,
     executor_capabilities=("repo-write", "local-test"),
     workspace_root=workspace,
-    netns_name="fieldbook-sandbox",           # Configurable netns name
+    netns_name="fieldbook-sandbox",           # Fixed production namespace
     anthropic_base_url="http://192.168.10.252:8318",  # Proxy URL
     anthropic_api_key="sk-litellm-local-no-auth",     # Proxy key
 )
 ```
 
-The `netns_name` parameter defaults to `fieldbook-sandbox` but can be changed for
-testing or alternative deployments. The `_run_process` static method wraps the
+The production adapter is fixed to the installed `fieldbook-sandbox` namespace;
+arbitrary `netns_name` alternatives are not supported. The private `_runner`
+seam (used only by repository tests) may rewrite the dispatch argument to the
+`fieldbook-test` fixture namespace. The `_run_process` static method wraps the
 bwrap command inside `ip netns exec <netns_name>` to execute within the scoped
 egress namespace.
 

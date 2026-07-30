@@ -17,18 +17,19 @@ grep -q '^owner=fieldbook-sandbox$' "$STATE_FILE" || fail_closed 'malformed/miss
 # Parse untrusted state as data, never by sourcing it.  Every value is fixed or
 # strongly constrained, and the complete key set is required before inspection.
 mapfile -t state_keys < <(sed -n 's/^\([a-z_]*\)=.*$/\1/p' "$STATE_FILE")
-expected_keys=(owner version netns veth_host veth_ns host_ip ns_ip net uplink proxy chain input_chain old_ip_forward changed_ip_forward)
+expected_keys=(owner version netns netns_inode veth_host veth_ns host_ifindex ns_ifindex host_ip ns_ip net uplink proxy chain input_chain old_ip_forward changed_ip_forward)
 [[ "${#state_keys[@]}" -eq "${#expected_keys[@]}" ]] || fail_closed 'runtime state is partial or has unknown lines'
 for key in "${expected_keys[@]}"; do
   [[ "$(printf '%s\n' "${state_keys[@]}" | grep -cx "$key")" == 1 ]] || fail_closed "runtime state key is missing or duplicated: $key"
 done
 state_value() { awk -F= -v key="$1" '$1 == key { print substr($0, index($0, "=") + 1) }' "$STATE_FILE"; }
-owner=$(state_value owner); version=$(state_value version); netns=$(state_value netns)
-veth_host=$(state_value veth_host); veth_ns=$(state_value veth_ns); host_ip=$(state_value host_ip); ns_ip=$(state_value ns_ip)
+owner=$(state_value owner); version=$(state_value version); netns=$(state_value netns); netns_inode=$(state_value netns_inode)
+veth_host=$(state_value veth_host); veth_ns=$(state_value veth_ns); host_ifindex=$(state_value host_ifindex); ns_ifindex=$(state_value ns_ifindex); host_ip=$(state_value host_ip); ns_ip=$(state_value ns_ip)
 net=$(state_value net); uplink=$(state_value uplink); proxy=$(state_value proxy)
 chain=$(state_value chain); input_chain=$(state_value input_chain)
 old_ip_forward=$(state_value old_ip_forward); changed_ip_forward=$(state_value changed_ip_forward)
 [[ "$owner" == fieldbook-sandbox && "$version" == 3 && "$netns" == "$NETNS_NAME" ]] || fail_closed 'runtime state marker or version is invalid'
+[[ "$netns_inode" =~ ^[0-9]+$ && "$host_ifindex" =~ ^[0-9]+$ && "$ns_ifindex" =~ ^[0-9]+$ ]] || fail_closed 'runtime identity state is invalid'
 [[ "$veth_host" == "$VETH_HOST" && "$veth_ns" == "$VETH_NS" && "$host_ip" == "$HOST_IP/24" && "$ns_ip" == "$NS_IP/24" ]] || fail_closed 'runtime topology in state is not managed topology'
 [[ "$net" == "$NET" && "$uplink" =~ ^[a-zA-Z0-9_.:-]+$ && "$proxy" =~ ^192\.168\.10\.252:8318$ ]] || fail_closed 'runtime route or proxy state is invalid'
 [[ "$chain" == "$CHAIN" && "$input_chain" == "$INPUT_CHAIN" && "$old_ip_forward" =~ ^[01]$ && "$changed_ip_forward" == 1 ]] || fail_closed 'runtime policy state is invalid'
@@ -39,21 +40,47 @@ iptables_chain() { "$IPTABLES" -S "$1" 2>/dev/null; }
 ip6_chain() { "$IP6TABLES" -S "$1" 2>/dev/null; }
 require_line() { grep -Fqx -- "$2" <<<"$1"; }
 [[ "$("$IP" netns list | awk '{print $1}' | grep -cx "$NETNS_NAME")" == 1 ]] || fail_closed 'managed namespace is absent or ambiguous'
+actual_netns_inode=$(stat -Lc '%i' "/var/run/netns/$NETNS_NAME" 2>/dev/null || true)
+[[ "$actual_netns_inode" == "$netns_inode" ]] || fail_closed 'managed namespace inode does not match'
 "$IP" link show "$VETH_HOST" type veth >/dev/null 2>&1 || fail_closed 'managed host veth is absent or not veth'
+actual_host_ifindex=$("$IP" -o link show dev "$VETH_HOST" | awk -F: '{print $1}')
+[[ "$actual_host_ifindex" == "$host_ifindex" ]] || fail_closed 'managed host veth ifindex does not match'
 "$IP" -o addr show dev "$VETH_HOST" | grep -Eq "inet $HOST_IP/24( |$)" || fail_closed 'managed host veth address 10.200.2.1 does not match'
 "$IP" -n "$NETNS_NAME" link show dev "$VETH_NS" >/dev/null 2>&1 || fail_closed 'managed namespace peer is absent'
+actual_ns_ifindex=$("$IP" -n "$NETNS_NAME" -o link show dev "$VETH_NS" | awk -F: '{print $1}')
+[[ "$actual_ns_ifindex" == "$ns_ifindex" ]] || fail_closed 'managed namespace peer ifindex does not match'
 "$IP" -n "$NETNS_NAME" -o addr show dev "$VETH_NS" | grep -Eq "inet $NS_IP/24( |$)" || fail_closed 'managed namespace address does not match'
 "$IP" -n "$NETNS_NAME" route show default | grep -Fqx "default via $HOST_IP dev $VETH_NS" || fail_closed 'managed namespace route does not match'
 "$IP" link show dev "$uplink" >/dev/null 2>&1 || fail_closed 'recorded uplink is absent'
 
-require_line "iptables_chain "$CHAIN"" "-A $CHAIN -m comment --comment $MARKER" || fail_closed 'IPv4 chain marker mismatch'
-require_line "iptables_chain "$INPUT_CHAIN"" "-A $INPUT_CHAIN -m comment --comment $MARKER" || fail_closed 'INPUT chain marker mismatch'
-require_line "ip6_chain "$CHAIN"" "-A $CHAIN -m comment --comment $MARKER" || fail_closed 'IPv6 chain marker mismatch'
+require_line "$(iptables_chain "$CHAIN")" "-A $CHAIN -m comment --comment $MARKER" || fail_closed 'IPv4 chain marker mismatch'
+require_line "$(iptables_chain "$INPUT_CHAIN")" "-A $INPUT_CHAIN -m comment --comment $MARKER" || fail_closed 'INPUT chain marker mismatch'
+require_line "$(ip6_chain "$CHAIN")" "-A $CHAIN -m comment --comment $MARKER" || fail_closed 'IPv6 chain marker mismatch'
 for rule in "-A FORWARD -j $CHAIN" "-A INPUT -j $INPUT_CHAIN"; do
-  "$IPTABLES" -S "${rule#-A }" 2>/dev/null | grep -Fqx -- "$rule" || fail_closed "owned jump is missing or changed: $rule"
+  jump_chain=FORWARD
+  [[ "$rule" == "-A INPUT "* ]] && jump_chain=INPUT
+  "$IPTABLES" -S "$jump_chain" 2>/dev/null | grep -Fqx -- "$rule" || fail_closed "owned jump is missing or changed: $rule"
 done
 "$IP6TABLES" -S FORWARD 2>/dev/null | grep -Fqx -- "-A FORWARD -j $CHAIN" || fail_closed 'owned IPv6 jump is missing or changed'
 "$IPTABLES" -t nat -S POSTROUTING 2>/dev/null | grep -Fqx -- "-A POSTROUTING -s $NET -j MASQUERADE" || fail_closed 'owned NAT rule is missing or changed'
+# Validate the complete managed policy, not merely its marker, before deletion.
+for rule in \
+  "-A $CHAIN -m comment --comment $MARKER" \
+  "-A $CHAIN ! -i $VETH_HOST ! -o $VETH_HOST -j RETURN" \
+  "-A $CHAIN -i $VETH_HOST -o $uplink -s $NET -d ${proxy%:*} -p tcp --dport ${proxy##*:} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT" \
+  "-A $CHAIN -o $VETH_HOST -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT" \
+  "-A $CHAIN -i $VETH_HOST -o $uplink -s $NET -j DROP" \
+  "-A $CHAIN -j DROP"; do
+  require_line "$(iptables_chain "$CHAIN")" "$rule" || fail_closed "IPv4 managed policy mismatch: $rule"
+done
+for rule in \
+  "-A $CHAIN -m comment --comment $MARKER" \
+  "-A $CHAIN ! -i $VETH_HOST ! -o $VETH_HOST -j RETURN" \
+  "-A $CHAIN -i $VETH_HOST -j DROP" \
+  "-A $CHAIN -o $VETH_HOST -j DROP" \
+  "-A $CHAIN -j DROP"; do
+  require_line "$(ip6_chain "$CHAIN")" "$rule" || fail_closed "IPv6 managed policy mismatch: $rule"
+done
 
 rc=0
 "$IPTABLES" -D FORWARD -j "$CHAIN" || rc=1

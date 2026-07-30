@@ -53,11 +53,14 @@ uplink="${routes[0]#* dev }"; uplink="${uplink%% *}"
 old_ip_forward="$("$SYSCTL" -n net.ipv4.ip_forward)"
 # The marker is durable before the first namespace/firewall mutation.
 tmp_state="$STATE_DIR/.runtime-state.$$"
-( umask 077; printf '%s\n' 'owner=fieldbook-sandbox' 'version=3' "netns=$NETNS_NAME" "veth_host=$VETH_HOST" "veth_ns=$VETH_NS" "host_ip=$HOST_IP/24" "ns_ip=$NS_IP/24" "net=$NET" "uplink=$uplink" "proxy=$PROXY_HOST:$PROXY_PORT" "chain=$CHAIN" "input_chain=$INPUT_CHAIN" "old_ip_forward=$old_ip_forward" "changed_ip_forward=1" ) >"$tmp_state"
+( umask 077; printf '%s\n' 'owner=fieldbook-sandbox' 'version=3' "netns=$NETNS_NAME" 'netns_inode=0' "veth_host=$VETH_HOST" "veth_ns=$VETH_NS" 'host_ifindex=0' 'ns_ifindex=0' "host_ip=$HOST_IP/24" "ns_ip=$NS_IP/24" "net=$NET" "uplink=$uplink" "proxy=$PROXY_HOST:$PROXY_PORT" "chain=$CHAIN" "input_chain=$INPUT_CHAIN" "old_ip_forward=$old_ip_forward" "changed_ip_forward=1" ) >"$tmp_state"
 chown root:root "$tmp_state"; chmod 600 "$tmp_state"; mv -f "$tmp_state" "$STATE_FILE"; state_created=1
 "$IP" netns add "$NETNS_NAME"
 "$IP" link add "$VETH_HOST" type veth peer name "$VETH_NS"
 "$IP" link set "$VETH_NS" netns "$NETNS_NAME"
+netns_inode=$(stat -Lc '%i' "/var/run/netns/$NETNS_NAME" 2>/dev/null || true); host_ifindex=$("$IP" -o link show dev "$VETH_HOST" | awk -F: '{print $1}'); ns_ifindex=$("$IP" -n "$NETNS_NAME" -o link show dev "$VETH_NS" | awk -F: '{print $1}')
+[[ "$netns_inode" =~ ^[0-9]+$ && "$host_ifindex" =~ ^[0-9]+$ && "$ns_ifindex" =~ ^[0-9]+$ ]] || fail 'could not record managed topology identity'
+( umask 077; printf '%s\n' 'owner=fieldbook-sandbox' 'version=3' "netns=$NETNS_NAME" "netns_inode=$netns_inode" "veth_host=$VETH_HOST" "veth_ns=$VETH_NS" "host_ifindex=$host_ifindex" "ns_ifindex=$ns_ifindex" "host_ip=$HOST_IP/24" "ns_ip=$NS_IP/24" "net=$NET" "uplink=$uplink" "proxy=$PROXY_HOST:$PROXY_PORT" "chain=$CHAIN" "input_chain=$INPUT_CHAIN" "old_ip_forward=$old_ip_forward" "changed_ip_forward=1" ) >"$tmp_state"; chown root:root "$tmp_state"; chmod 600 "$tmp_state"; mv -f "$tmp_state" "$STATE_FILE"
 "$IP" addr add "$HOST_IP/24" dev "$VETH_HOST"; "$IP" link set "$VETH_HOST" up
 "$IP" -n "$NETNS_NAME" addr add "$NS_IP/24" dev "$VETH_NS"; "$IP" -n "$NETNS_NAME" link set "$VETH_NS" up; "$IP" -n "$NETNS_NAME" link set lo up
 "$IP" -n "$NETNS_NAME" route add default via "$HOST_IP"
@@ -80,7 +83,12 @@ chown root:root "$tmp_state"; chmod 600 "$tmp_state"; mv -f "$tmp_state" "$STATE
 "$IP" -n "$NETNS_NAME" route get "$PROXY_HOST" | grep -Eq "dev $VETH_NS"
 "$IPTABLES" -S "$CHAIN" | grep -F -- "-d $PROXY_HOST -p tcp --dport $PROXY_PORT" >/dev/null
 "$IPTABLES" -S INPUT | grep -F -- "-j $INPUT_CHAIN" >/dev/null
-"$IP" netns exec "$NETNS_NAME" "$CURL" --fail --silent --show-error --connect-timeout 5 --max-time 10 "http://${PROXY_HOST}:${PROXY_PORT}/health/readiness" >/dev/null || fail 'proxy readiness check failed'
+ready=0
+for attempt in 1 2 3 4 5; do
+  if "$IP" netns exec "$NETNS_NAME" "$CURL" --fail --silent --show-error --connect-timeout 5 --max-time 10 "http://${PROXY_HOST}:${PROXY_PORT}/health/readiness" >/dev/null; then ready=1; break; fi
+  (( attempt < 5 )) && sleep "$attempt"
+done
+(( ready == 1 )) || fail 'proxy readiness check failed after bounded retries'
 if "$IP" netns exec "$NETNS_NAME" "$CURL" --connect-timeout 3 --max-time 5 --silent --output /dev/null http://example.com/; then fail 'non-proxy egress is reachable'; fi
 trap - EXIT
 printf 'Fieldbook sandbox ready: %s via %s (%s:%s only)\n' "$NETNS_NAME" "$uplink" "$PROXY_HOST" "$PROXY_PORT"
