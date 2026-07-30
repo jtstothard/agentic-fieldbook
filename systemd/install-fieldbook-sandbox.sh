@@ -6,12 +6,9 @@ readonly SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly TARGET_DIR=/usr/local/libexec STATE_DIR=/var/lib/fieldbook-sandbox
 readonly NETNS_NAME=fieldbook-sandbox VETH_HOST=fb-sandbox0
 readonly CHAIN=FIELDBOOK_SANDBOX INPUT_CHAIN=FIELDBOOK_SANDBOX_INPUT INPUT6_CHAIN=FIELDBOOK_SANDBOX_INPUT6 NET=10.200.2.0/24
-force=0
 case "${1:-}" in
-  '') ;;
-  --force|--migrate) force=1 ;;
-  --help) printf 'Usage: %s [--force|--migrate]\n' "$0"; exit 0 ;;
-  *) printf 'usage: %s [--force|--migrate]\n' "$0" >&2; exit 2 ;;
+  ''|--help) printf 'Usage: %s\n' "$0"; exit 0 ;;
+  *) printf 'usage: %s\n' "$0" >&2; exit 2 ;;
 esac
 
 # This check is deliberately broader than service activity.  An inactive legacy
@@ -38,10 +35,9 @@ if command -v ip6tables >/dev/null 2>&1; then
   ip6tables -S INPUT 2>/dev/null | grep -Fqx -- "-A INPUT -j $INPUT6_CHAIN" && add_evidence 'managed IPv6 INPUT jump'
   ip6tables -S FORWARD 2>/dev/null | grep -Fqx -- "-A FORWARD -j $CHAIN" && add_evidence 'managed IPv6 FORWARD jump'
 fi
-if (( ${#managed_evidence[@]} > 0 && force == 0 )); then
+if (( ${#managed_evidence[@]} > 0 )); then
   printf 'refusing upgrade: managed sandbox evidence exists (%s).\n' "${managed_evidence[*]}" >&2
   printf 'Safely reconcile the legacy deployment first; see docs/legacy-sandbox-reconciliation.md.\n' >&2
-  printf 'Use --force/--migrate only after that procedure proves all managed objects and state are gone.\n' >&2
   exit 1
 fi
 install -d -o root -g root -m 0755 "$TARGET_DIR"

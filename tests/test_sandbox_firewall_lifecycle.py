@@ -333,6 +333,65 @@ class TestHostGatewayExposure:
         assert found_host_gateway_deny, "Missing host-gateway deny rule"
 
 
+class TestInstallerEvidenceGate:
+    """Installer must refuse when ANY managed evidence exists, regardless of flags."""
+
+    def test_installer_force_flag_removed(self):
+        """Installer must not accept --force/--migrate flags."""
+        installer = INSTALLER_SCRIPT.read_text()
+        assert '--force|--migrate' not in installer, "Installer still accepts force/migrate bypass"
+        assert 'force=' not in installer, "Installer still has force variable"
+        assert 'force ==' not in installer, "Installer still checks force variable"
+
+    def test_installer_unconditionally_refuses_with_evidence(self):
+        """Installer must refuse when ANY managed evidence exists, no bypass."""
+        installer = INSTALLER_SCRIPT.read_text()
+        # Evidence checks exist
+        assert 'managed_evidence' in installer
+        assert 'refusing upgrade' in installer
+        # No conditional based on force flag
+        assert 'force == 0' not in installer
+        # The gate is unconditional on evidence count
+        assert '${#managed_evidence[@]} > 0' in installer
+        assert '${#managed_evidence[@]} > 0 && force == 0' not in installer
+
+    def test_installer_checks_all_evidence_types(self):
+        """Installer checks all 8 managed object types before replacement."""
+        installer = INSTALLER_SCRIPT.read_text()
+        evidence_checks = [
+            'systemctl is-active',  # Active service
+            'runtime-state.conf',   # Owned state
+            'setup-journal.conf',   # Journal
+            'ip netns list',         # Namespace
+            'ip link show',          # Veth
+            'iptables -S',           # Chains
+            'grep -Fqx',             # Jumps
+            'iptables -t nat',       # NAT
+        ]
+        for check in evidence_checks:
+            assert check in installer, f"Missing evidence check: {check}"
+
+    def test_installer_usage_shows_no_force_option(self):
+        """Installer usage message must not show force/migrate options."""
+        installer = INSTALLER_SCRIPT.read_text()
+        assert 'Usage: %s' in installer
+        assert '--force' not in installer
+        assert '--migrate' not in installer
+
+    def test_installer_unconditional_evidence_check(self):
+        """Evidence check must be unconditional, no bypass path."""
+        installer = INSTALLER_SCRIPT.read_text()
+        lines = installer.splitlines()
+        evidence_gate_line = None
+        for line in lines:
+            if '${#managed_evidence[@]} > 0' in line and 'if' in line:
+                evidence_gate_line = line
+                break
+        assert evidence_gate_line is not None, "Evidence gate not found"
+        # Must be unconditional
+        assert '&&' not in evidence_gate_line or 'force' not in evidence_gate_line.lower()
+
+
 class TestInstallerUpgradeSafety:
     """Installer must detect inactive legacy state without touching the host."""
 
@@ -347,9 +406,7 @@ class TestInstallerUpgradeSafety:
 
     def test_clean_install_has_explicit_force_gate(self):
         installer = INSTALLER_SCRIPT.read_text()
-        assert '--force|--migrate' in installer
         assert 'managed_evidence' in installer
-        assert 'force == 0' in installer
         assert 'ip netns list' in installer
         assert 'iptables -t nat' in installer
 
