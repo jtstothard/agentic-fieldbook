@@ -52,6 +52,10 @@ def test_two_actor_bypass_still_blocked_at_executing():
 
     # Second actor approves (this is allowed)
     record.transition(LifecycleState.APPROVED, actor="approver")
+    record.bind_approval_receipt(
+        receipt_id="receipt-test", contract_digest="sha256:" + "a" * 64,
+        epoch=record.approval_epoch, recovery_attempt=record.recovery_attempt,
+    )
 
     # Second actor tries to execute with missing capabilities - should fail at capability check
     with pytest.raises(CapabilityMismatchError, match="lacks required capabilities"):
@@ -81,6 +85,10 @@ def test_bypass_attempt_defense_in_depth_blocks_same_approver_executor():
 
     # Second actor approves
     record.transition(LifecycleState.APPROVED, actor="approver")
+    record.bind_approval_receipt(
+        receipt_id="receipt-test", contract_digest="sha256:" + "a" * 64,
+        epoch=record.approval_epoch, recovery_attempt=record.recovery_attempt,
+    )
 
     # Approver tries to execute - should fail at defense-in-depth check
     with pytest.raises(InvalidTransitionError, match="executor must differ from approver"):

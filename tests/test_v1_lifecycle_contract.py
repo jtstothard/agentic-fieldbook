@@ -398,6 +398,10 @@ def test_high_risk_rejects_self_verification():
     record.transition(LifecycleState.PLANNED, actor="planner")
     # High-risk requires independent approver
     record.transition(LifecycleState.APPROVED, actor="approver", reason="Human approval")
+    record.bind_approval_receipt(
+        receipt_id="receipt-test", contract_digest="sha256:" + "a" * 64,
+        epoch=record.approval_epoch, recovery_attempt=record.recovery_attempt,
+    )
     record.transition(
         LifecycleState.EXECUTING,
         actor="executor",

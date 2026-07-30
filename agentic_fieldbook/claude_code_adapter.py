@@ -597,6 +597,10 @@ class ClaudeCodeAdapter(DispatchAdapter):
                                                    stderr=stderr, stdout=stdout, returncode=returncode,
                                                    execution_metadata={"scope_violations": violations})
             return self._save_failure(record, task_id, "scope_violation", "changed files outside contract boundary: " + ", ".join(violations), expected_snapshot=before)
+        if returncode != 0:
+            record._provenance = self._provenance(args, session_id=None, started=started, finished=finished,
+                                                   stderr=stderr, stdout=stdout, returncode=returncode)
+            return self._save_failure(record, task_id, "execution_failed", "Claude exited unsuccessfully", expected_snapshot=before)
         try:
             payload = json.loads(stdout)
             if not isinstance(payload, dict):
@@ -616,8 +620,6 @@ class ClaudeCodeAdapter(DispatchAdapter):
         record._provenance = self._provenance(args, session_id=payload["session_id"], started=started, finished=finished,
                                                stderr=stderr, stdout=stdout, returncode=returncode,
                                                execution_metadata=metadata)
-        if returncode != 0:
-            return self._save_failure(record, task_id, "execution_failed", "Claude exited unsuccessfully", expected_snapshot=before)
         record.transition(LifecycleState.REPORTED_COMPLETE, actor="claude-code", evidence=[{
             "requirement": "claude-output", "claim": "Claude Code structured execution succeeded",
             "tool": "claude", "result": json.dumps(metadata, sort_keys=True), "passed": True}])

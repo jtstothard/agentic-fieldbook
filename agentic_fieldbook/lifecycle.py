@@ -212,6 +212,8 @@ class CanonicalTaskRecord:
     _recovery_attempt: int = field(default=0, init=False, repr=False)
     _approval_receipt_id: str | None = field(default=None, init=False, repr=False)
     _approval_contract_digest: str | None = field(default=None, init=False, repr=False)
+    _approval_binding_epoch: int | None = field(default=None, init=False, repr=False)
+    _approval_binding_recovery_attempt: int | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def create(cls, contract: TaskContract, *, task_id: str) -> "CanonicalTaskRecord":
@@ -258,6 +260,8 @@ class CanonicalTaskRecord:
             raise InvalidTransitionError("approval receipt is stale for this recovery attempt")
         self._approval_receipt_id = receipt_id
         self._approval_contract_digest = contract_digest
+        self._approval_binding_epoch = epoch
+        self._approval_binding_recovery_attempt = recovery_attempt
 
     def approval_receipt_is_current(self, *, receipt_id: str, contract_digest: str) -> bool:
         return (receipt_id == self._approval_receipt_id
@@ -265,7 +269,9 @@ class CanonicalTaskRecord:
 
     @property
     def has_current_approval_binding(self) -> bool:
-        return bool(self._approval_receipt_id and self._approval_contract_digest)
+        return (bool(self._approval_receipt_id and self._approval_contract_digest)
+                and self._approval_binding_epoch == self._approval_epoch
+                and self._approval_binding_recovery_attempt == self._recovery_attempt)
 
     def transition(
         self,
@@ -309,6 +315,10 @@ class CanonicalTaskRecord:
 
         # Capability ceiling enforcement at first APPROVED → EXECUTING gate
         if target_state is LifecycleState.EXECUTING and self.state is LifecycleState.APPROVED:
+            if self.contract.risk_class == "high" and not self.has_current_approval_binding:
+                raise InvalidTransitionError(
+                    "high-risk execution requires a current approval receipt binding"
+                )
             if self.contract.capabilities:
                 if executor_capabilities is None:
                     raise InvalidTransitionError("executor_capabilities required")
@@ -349,6 +359,12 @@ class CanonicalTaskRecord:
 
         # Record human approval when transitioning to APPROVED with approval metadata
         if target_state is LifecycleState.APPROVED:
+            if (self.recovery_attempt > 0
+                    and (self.contract.risk_class == "high" or self._governance.requires_human_approval())
+                    and not self.has_current_approval_binding):
+                raise InvalidTransitionError(
+                    "recovery approval requires a fresh approval receipt binding"
+                )
             # Check if this is a human approval (not auto-approval)
             # We consider it an approval if the actor differs from previous state's actor
             # or if reason contains approval-related keywords
@@ -425,6 +441,8 @@ class CanonicalTaskRecord:
             self._recovery_attempt += 1
             self._approval_receipt_id = None
             self._approval_contract_digest = None
+            self._approval_binding_epoch = None
+            self._approval_binding_recovery_attempt = None
             self._governance.approvals.clear()
 
     def to_dict(self) -> dict[str, Any]:
@@ -441,6 +459,8 @@ class CanonicalTaskRecord:
             "recovery_attempt": self._recovery_attempt,
             "approval_receipt_id": self._approval_receipt_id,
             "approval_contract_digest": self._approval_contract_digest,
+            "approval_binding_epoch": self._approval_binding_epoch,
+            "approval_binding_recovery_attempt": self._approval_binding_recovery_attempt,
         }
 
     @classmethod
@@ -485,17 +505,14 @@ class CanonicalTaskRecord:
             if type(value) is not int or value < 0:
                 raise ValueError(f"{field_name} must be a non-negative integer")
             setattr(record, f"_{field_name}", value)
-        receipt_id = data.get("approval_receipt_id")
-        digest = data.get("approval_contract_digest")
-        if receipt_id is not None and (not isinstance(receipt_id, str) or not receipt_id.strip()):
-            raise ValueError("approval_receipt_id must be a non-empty string or null")
-        if digest is not None and (not isinstance(digest, str)
-                                   or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)):
-            raise ValueError("approval_contract_digest must be a sha256:<64 hex characters> digest or null")
-        if (receipt_id is None) != (digest is None):
-            raise ValueError("approval receipt binding must contain both receipt_id and contract_digest")
-        record._approval_receipt_id = receipt_id
-        record._approval_contract_digest = digest
+        # Never restore approval binding fields from persisted data.
+        # A deserialized record always requires a fresh broker bind_approval_receipt()
+        # before transitioning to EXECUTING. This prevents replay attacks and
+        # ensures authorization is validated against the current recovery attempt.
+        record._approval_receipt_id = None
+        record._approval_contract_digest = None
+        record._approval_binding_epoch = None
+        record._approval_binding_recovery_attempt = None
 
         return record
 

@@ -18,6 +18,16 @@ from agentic_fieldbook.lifecycle import (
 from agentic_fieldbook.governance import MissingRollbackError
 
 
+def bind_current_approval(record: CanonicalTaskRecord) -> None:
+    """Provide the current broker receipt binding required by high-risk tests."""
+    record.bind_approval_receipt(
+        receipt_id="broker-receipt-test",
+        contract_digest="sha256:" + "a" * 64,
+        epoch=record.approval_epoch,
+        recovery_attempt=record.recovery_attempt,
+    )
+
+
 # Test fixtures for different risk levels
 def low_risk_contract() -> TaskContract:
     return TaskContract(
@@ -214,6 +224,7 @@ def test_high_risk_requires_exact_human_approval_before_executing():
         actor="human-approver",
         reason="High-risk change approved after review",
     )
+    bind_current_approval(record)
 
     # Now can proceed to EXECUTING with required capabilities
     record.transition(
@@ -267,6 +278,7 @@ def test_failed_high_risk_requires_rollback_evidence():
     # Progress to EXECUTING with different actors for approval
     record.transition(LifecycleState.PLANNED, actor="planner")
     record.transition(LifecycleState.APPROVED, actor="human-approver", reason="High-risk approval")
+    bind_current_approval(record)
     record.transition(
         LifecycleState.EXECUTING,
         actor="executor",
@@ -294,6 +306,7 @@ def test_failed_high_risk_requires_rollback_evidence():
         actor="planner",
         reason="replanned after blocked recovery",
     )
+    bind_current_approval(record)
     record.transition(
         LifecycleState.APPROVED,
         actor="human-reapprover",
@@ -320,6 +333,7 @@ def test_partial_success_requires_rollback_verification():
     # Progress through lifecycle with different actors for approval
     record.transition(LifecycleState.PLANNED, actor="planner")
     record.transition(LifecycleState.APPROVED, actor="human-approver", reason="High-risk approval")
+    bind_current_approval(record)
     record.transition(
         LifecycleState.EXECUTING,
         actor="executor",
@@ -408,6 +422,7 @@ def test_capability_check_recorded_in_history():
         actor="human-approver",
         reason="Approved with verified capabilities",
     )
+    bind_current_approval(record)
 
     # Check that capability checks are in history
     # For now, we'll just verify the approval is recorded
@@ -492,6 +507,7 @@ def test_high_risk_enforces_strictest_controls():
         actor="human-approver",
         reason="High-risk approval",
     )
+    bind_current_approval(record)
 
     # Progress to verification
     record.transition(

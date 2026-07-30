@@ -26,6 +26,10 @@ def test_high_risk_same_approver_and_executor_blocked():
 
     record.transition(LifecycleState.PLANNED, actor="planner")
     record.transition(LifecycleState.APPROVED, actor="approver")
+    record.bind_approval_receipt(
+        receipt_id="receipt-test", contract_digest="sha256:" + "a" * 64,
+        epoch=record.approval_epoch, recovery_attempt=record.recovery_attempt,
+    )
 
     # Same actor who approved tries to execute - should be blocked
     with pytest.raises(InvalidTransitionError, match="executor must differ from approver"):
@@ -52,6 +56,10 @@ def test_always_ask_same_approver_and_executor_blocked():
 
     record.transition(LifecycleState.PLANNED, actor="planner")
     record.transition(LifecycleState.APPROVED, actor="approver")
+    record.bind_approval_receipt(
+        receipt_id="receipt-test", contract_digest="sha256:" + "a" * 64,
+        epoch=record.approval_epoch, recovery_attempt=record.recovery_attempt,
+    )
 
     # Same actor who approved tries to execute - should be blocked
     with pytest.raises(InvalidTransitionError, match="executor must differ from approver"):
@@ -130,6 +138,10 @@ def test_defense_in_depth_checks_who_approved():
 
     record.transition(LifecycleState.PLANNED, actor="planner")
     record.transition(LifecycleState.APPROVED, actor="approver-1")
+    record.bind_approval_receipt(
+        receipt_id="receipt-test", contract_digest="sha256:" + "a" * 64,
+        epoch=record.approval_epoch, recovery_attempt=record.recovery_attempt,
+    )
 
     # Different actor approved, so execution should be allowed
     record.transition(

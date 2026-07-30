@@ -1,0 +1,9 @@
+trust_bwrap= /usr/bin/bwrap
+trust_claude= /usr/local/bin/claude
+direct_rc= 0
+direct_stdout= '2.1.207 (Claude Code)\n'
+direct_stderr= ''
+dispatch_success= False
+dispatch_reason= invalid_output
+record_state= failed
+provenance= {"args": ["claude", "-p", {"digest": "dd77ee775e3265afc8ab443edcf6dc1a36d729b05d60b8a95485d9a30fc16fcb", "length": 588, "preview": "Execute this Fieldbook task using the contract artifact below. This is an artifact-only handoff; do not assume or request prior "}, "--output-format", "json", "--max-turns", "10"], "capability_snapshot": [], "command": "claude", "contract_digest": "sha256:736d899f41b61936a3dcf9a2d991ae350ea1d531a7bcd751193094cd7a3460dc", "contract_identity": "REAL-CLAUDE", "cwd": "/tmp/fieldbook-real-32kdl46c", "environment_keys": ["PATH", "HOME", "LANG", "LC_ALL"], "execution_metadata": {}, "exit_code": 1, "finished_at": "2026-07-30T07:22:20.359225+00:00", "session_id": null, "started_at": "2026-07-30T07:22:19.322732+00:00", "stderr": "", "stdout_digest": "0e1b82f54951ae878937c3ddf793f81a4e23c3b2c1c5100f9268d5786ecab05a", "stdout_preview": "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"api_error_status\":null,\"duration_ms\":79,\"duration_api_ms\":0,\"num_turns\":1,\"result\":\"Not logged in \u00b7 Please run /login\",\"stop_reason\":\"stop_sequence\",\"session_id\":\"b8cabee4-155d-4465-84b4-fff510b58af3\",\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":0,\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":0},\"inference_geo\":\"\",\"iterations\":[],\"speed\":\"standard\"},\"modelUsage\":{},\"permission_denials\":[],\"terminal_reason\":\"api_error\",\"fast_mode_state\":\"off\",\"uuid\":\"aa7c810c-18e6-44e7-b8a6-52164e6ead89\"}\n"}

@@ -406,8 +406,12 @@ def _canonical_action_package(contract: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _canonical_contract_projection(contract: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the complete contract projection, excluding only its declaration."""
-    return {key: value for key, value in contract.items() if key != "contract_digest"}
+    """Return the complete contract projection, excluding digest declarations.
+
+    Must match contract.canonical_contract_projection() output.
+    """
+    return {key: value for key, value in contract.items()
+            if key not in ("contract_digest", "action_digest")}
 
 
 # ── Public verification function ─────────────────────────────────────────
