@@ -145,7 +145,7 @@ This enables exact restoration of host state on teardown.
 
 On setup failure, the cleanup function:
 
-1. Restores any displaced FORWARD rule
+1. Removes the owned FORWARD jump (no displaced-rule restoration is performed; insertion at position 1 is transactional)
 2. Deletes the exact NAT rule added by this service
 3. Restores `ip_forward` to its prior value
 4. Deletes veth pair and namespace
@@ -182,17 +182,16 @@ The sandbox boundary is defined by these invariant tests:
 2. **No unconditional DROP**: Every DROP is scoped to sandbox traffic
 3. **Ownership marker**: Chain contains ownership comment for verification
 4. **Forward ordering**: Jump at position 1, cannot be bypassed
-5. **Displaced rule tracking**: Pre-existing FORWARD rules are restored
-6. **Pre-state recording**: ip_forward recorded before mutation
-7. **State persistence**: Runtime state written to root-owned file
-8. **NAT exactness**: NAT rule not route-dependent, deleted exactly
-9. **Cleanup deletes NAT**: Failure path deletes NAT rule
-10. **Restore ip_forward**: Both cleanup and teardown restore ip_forward
-11. **Verify before delete**: Namespace/veth verified before deletion
-12. **Fail closed**: Topology mismatch prevents blind deletion
-13. **Host-gateway deny**: veth ingress to 10.200.2.1 blocked
-14. **No accumulation**: Repeated start/stop doesn't accumulate NAT rules
-15. **State cleanup**: Teardown removes state file
+5. **Pre-state recording**: ip_forward recorded before mutation
+6. **State persistence**: Runtime state written to root-owned file
+7. **NAT exactness**: NAT rule not route-dependent, deleted exactly
+8. **Cleanup deletes NAT**: Failure path deletes NAT rule
+9. **Restore ip_forward**: Both cleanup and teardown restore ip_forward
+10. **Verify before delete**: Namespace/veth verified before deletion
+11. **Fail closed**: Topology mismatch prevents blind deletion
+12. **Host-gateway deny**: veth ingress to 10.200.2.1 blocked
+13. **No accumulation**: Repeated start/stop doesn't accumulate NAT rules
+14. **State cleanup**: Teardown removes runtime state and setup journal
 
 See `tests/test_sandbox_firewall_lifecycle.py` for adversarial tests of each invariant.
 
@@ -283,7 +282,7 @@ The state file contains only boolean flags and string values, no secrets.
 3. **Proxy dependency**: Requires proxy at 192.168.10.252:8318 with `/health/readiness`
 4. **Root required**: Cannot run as unprivileged user
 5. **Linux only**: No support for other operating systems
-6. **IPv4 focus**: IPv6 is blocked, not scoped
+6. **Dual-stack policy**: IPv4 proxy egress is allowlisted while IPv4 and IPv6 non-proxy traffic is explicitly denied
 
 ## Threat Model
 

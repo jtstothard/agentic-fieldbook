@@ -4,15 +4,18 @@ set -Eeuo pipefail
 readonly IP=/usr/sbin/ip IPTABLES=/usr/sbin/iptables IP6TABLES=/usr/sbin/ip6tables SYSCTL=/usr/sbin/sysctl
 readonly NETNS_NAME=fieldbook-sandbox VETH_HOST=fb-sandbox0 VETH_NS=fb-sandbox1 HOST_IP=10.200.2.1 NS_IP=10.200.2.2
 readonly CHAIN=FIELDBOOK_SANDBOX INPUT_CHAIN=FIELDBOOK_SANDBOX_INPUT INPUT6_CHAIN=FIELDBOOK_SANDBOX_INPUT6 NET=10.200.2.0/24
-readonly STATE_DIR=/var/lib/fieldbook-sandbox STATE_FILE="$STATE_DIR/runtime-state.conf"
+readonly STATE_DIR=/var/lib/fieldbook-sandbox STATE_FILE="$STATE_DIR/runtime-state.conf" JOURNAL_FILE="$STATE_DIR/setup-journal.conf"
 readonly MARKER=fieldbook-sandbox-ownership-marker
 
 (( EUID == 0 )) || { printf 'must run as root\n' >&2; exit 1; }
 
 fail_closed() { printf 'Failing closed: no object is deleted: %s\n' "$*" >&2; exit 1; }
 [[ -f "$STATE_FILE" ]] || fail_closed 'runtime state is missing; nothing will be deleted (Foreign objects are never deleted)'
+[[ -f "$JOURNAL_FILE" ]] || fail_closed 'setup journal is missing; refusing destructive cleanup'
 [[ "$(stat -c '%u:%g:%a' "$STATE_FILE" 2>/dev/null || true)" == 0:0:600 ]] || fail_closed 'runtime state ownership or mode is invalid'
+[[ "$(stat -c '%u:%g:%a' "$JOURNAL_FILE" 2>/dev/null || true)" == 0:0:600 ]] || fail_closed 'setup journal ownership or mode is invalid'
 grep -q '^owner=fieldbook-sandbox$' "$STATE_FILE" || fail_closed 'malformed/missing state; refusing destructive cleanup'
+grep -Eq '^phase=(marker|netns|veth|veth_move|topology|ip_forward|firewall)$' "$JOURNAL_FILE" || fail_closed 'malformed setup journal; refusing destructive cleanup'
 
 # Parse untrusted state as data, never by sourcing it.  Every value is fixed or
 # strongly constrained, and the complete key set is required before inspection.
@@ -112,7 +115,7 @@ rc=0
 "$IP" link del "$VETH_HOST" || rc=1
 "$IP" netns del "$NETNS_NAME" || rc=1
 if (( rc == 0 )); then
-  rm -f "$STATE_FILE" || rc=1
+  rm -f "$STATE_FILE" "$JOURNAL_FILE" || rc=1
   rmdir "$STATE_DIR" 2>/dev/null || true
 else
   printf 'teardown incomplete; runtime state retained for retry\n' >&2

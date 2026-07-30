@@ -11,7 +11,14 @@ readonly MARKER=fieldbook-sandbox-ownership-marker
 changed_ip_forward=0
 state_created=0
 fail() { printf 'fieldbook sandbox setup failed: %s\n' "$*" >&2; exit 1; }
-owned_state() { [[ -f "$STATE_FILE" && $(stat -c '%u:%g:%a' "$STATE_FILE" 2>/dev/null || true) == 0:0:600 ]] || return 1; grep -qx 'owner=fieldbook-sandbox' "$STATE_FILE"; }
+owned_state() {
+  [[ -f "$STATE_FILE" && -f "$JOURNAL_FILE" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$STATE_FILE" 2>/dev/null || true) == 0:0:600 ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$JOURNAL_FILE" 2>/dev/null || true) == 0:0:600 ]] || return 1
+  grep -qx 'owner=fieldbook-sandbox' "$STATE_FILE" || return 1
+  grep -Eq '^phase=(marker|netns|veth|veth_move|topology|ip_forward|firewall)$' "$JOURNAL_FILE"
+}
+managed_state_exists() { [[ -e "$STATE_FILE" || -e "$JOURNAL_FILE" ]]; }
 object_exists() {
   "$IP" netns list 2>/dev/null | awk '{print $1}' | grep -qx "$NETNS_NAME" ||
   "$IP" link show "$VETH_HOST" >/dev/null 2>&1 ||
@@ -115,7 +122,7 @@ trap cleanup EXIT
 (( EUID == 0 )) || fail 'must run as root'
 for tool in "$IP" "$IPTABLES" "$IP6TABLES" "$SYSCTL" "$CURL"; do [[ -x "$tool" ]] || fail "required trusted tool missing: $tool"; done
 install -d -o root -g root -m 700 "$STATE_DIR"
-if owned_state || object_exists; then fail 'managed or foreign sandbox objects already exist; refusing collision cleanup'; fi
+if owned_state || managed_state_exists || object_exists; then fail 'managed or foreign sandbox objects already exist; refusing collision cleanup'; fi
 mapfile -t routes < <("$IP" -o -4 route show default)
 (( ${#routes[@]} == 1 )) || fail 'expected exactly one IPv4 default route'
 uplink="${routes[0]#* dev }"; uplink="${uplink%% *}"

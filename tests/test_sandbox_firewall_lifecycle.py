@@ -333,6 +333,37 @@ class TestHostGatewayExposure:
         assert found_host_gateway_deny, "Missing host-gateway deny rule"
 
 
+class TestInstallerUpgradeSafety:
+    """Installer must detect inactive legacy state without touching the host."""
+
+    def test_checks_inactive_legacy_state_and_journal(self):
+        installer = INSTALLER_SCRIPT.read_text()
+        assert 'systemctl is-active --quiet' in installer
+        assert 'runtime-state.conf' in installer
+        assert 'setup-journal.conf' in installer
+        assert 'managed_evidence' in installer
+        assert 'refusing upgrade' in installer
+        assert 'legacy-sandbox-reconciliation.md' in installer
+
+    def test_clean_install_has_explicit_force_gate(self):
+        installer = INSTALLER_SCRIPT.read_text()
+        assert '--force|--migrate' in installer
+        assert 'managed_evidence' in installer
+        assert 'force == 0' in installer
+        assert 'ip netns list' in installer
+        assert 'iptables -t nat' in installer
+
+
+class TestTeardownJournalLifecycle:
+    def test_journal_is_owned_and_removed_only_on_success(self):
+        teardown = TEARDOWN_SCRIPT.read_text()
+        assert 'JOURNAL_FILE=' in teardown
+        assert 'setup journal is missing' in teardown
+        assert 'setup journal ownership or mode is invalid' in teardown
+        assert 'rm -f "$STATE_FILE" "$JOURNAL_FILE"' in teardown
+        assert 'if (( rc == 0 )); then' in teardown
+
+
 class TestStaticVerification:
     """Safe static verification without host mutation."""
 
@@ -413,7 +444,7 @@ class TestRepeatedStartStop:
 
         found_cleanup = False
         for line in lines:
-            if 'rm -f "$STATE_FILE"' in line or 'rm "$STATE_FILE"' in line:
+            if 'rm -f "$STATE_FILE"' in line or 'rm "$STATE_FILE"' in line or ('$STATE_FILE' in line and '$JOURNAL_FILE' in line and 'rm -f' in line):
                 found_cleanup = True
                 break
 
