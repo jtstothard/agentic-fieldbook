@@ -18,6 +18,19 @@ CAPABILITY_APPROVAL_REQUIRED_FIELDS = (
 )
 
 
+def canonical_contract_projection(contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the contract fields bound by ``contract_digest``.
+
+    Excludes digest declarations that are not part of the contract itself:
+    - contract_digest: declaration of this digest
+    - action_digest: declaration of action package digest (post-split)
+    """
+    if not isinstance(contract, Mapping):
+        raise TypeError("contract must be a mapping")
+    return {key: value for key, value in contract.items()
+            if key not in ("contract_digest", "action_digest")}
+
+
 def _valid_target_identity(value: Any) -> bool:
     """Accept only concrete, non-empty target identity values."""
     if value is None or isinstance(value, bool):

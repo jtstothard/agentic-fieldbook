@@ -17,6 +17,7 @@ import re
 from typing import Any
 from .preflight import check_preflight
 from .contract import check_contract, check_capability_approval
+from .receipt import check_approval_receipt
 
 PLUGIN_NAME = "agentic-fieldbook"
 PLUGIN_VERSION = (Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
@@ -150,6 +151,10 @@ def _register_aos_cli(subparsers: Any) -> None:
     contract_group.add_argument(
         "--capability-approval",
         help="YAML capability-approval contract to validate",
+    )
+    contract_group.add_argument(
+        "--approval-receipt",
+        help="YAML approval receipt to validate",
     )
 
     # map-lanes subcommand
@@ -569,6 +574,9 @@ def _cmd_contract(args: Any) -> int:
     capability_approval = getattr(args, "capability_approval", None)
     if capability_approval:
         return check_capability_approval(capability_approval)
+    approval_receipt = getattr(args, "approval_receipt", None)
+    if approval_receipt:
+        return check_approval_receipt(approval_receipt)
     workspace = getattr(args, "workspace", None)
     if not workspace:
         print("ERROR: --workspace is required", file=sys.stderr)
