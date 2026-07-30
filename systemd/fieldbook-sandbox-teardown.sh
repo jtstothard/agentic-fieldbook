@@ -39,6 +39,12 @@ old_ip_forward=$(state_value old_ip_forward); changed_ip_forward=$(state_value c
 iptables_chain() { "$IPTABLES" -S "$1" 2>/dev/null; }
 ip6_chain() { "$IP6TABLES" -S "$1" 2>/dev/null; }
 require_line() { grep -Fqx -- "$2" <<<"$1"; }
+exactly_one() { [[ "$(grep -Fxc -- "$2" <<<"$1")" == 1 ]]; }
+exactly_one_jump_at_one() {
+  local table=$1 chain=$2 rule=$3
+  mapfile -t rules < <("$table" -S "$chain" 2>/dev/null)
+  [[ "${#rules[@]}" -ge 1 && "${rules[0]}" == "$rule" && "$(printf '%s\n' "${rules[@]}" | grep -Fxc -- "$rule")" == 1 ]]
+}
 [[ "$("$IP" netns list | awk '{print $1}' | grep -cx "$NETNS_NAME")" == 1 ]] || fail_closed 'managed namespace is absent or ambiguous'
 actual_netns_inode=$(stat -Lc '%i' "/var/run/netns/$NETNS_NAME" 2>/dev/null || true)
 [[ "$actual_netns_inode" == "$netns_inode" ]] || fail_closed 'managed namespace inode does not match'
@@ -58,13 +64,11 @@ actual_ns_ifindex=$("$IP" -n "$NETNS_NAME" -o link show dev "$VETH_NS" | awk -F:
 require_line "$(iptables_chain "$CHAIN")" "-A $CHAIN -m comment --comment $MARKER" || fail_closed 'IPv4 chain marker mismatch'
 require_line "$(iptables_chain "$INPUT_CHAIN")" "-A $INPUT_CHAIN -m comment --comment $MARKER" || fail_closed 'INPUT chain marker mismatch'
 require_line "$(ip6_chain "$CHAIN")" "-A $CHAIN -m comment --comment $MARKER" || fail_closed 'IPv6 chain marker mismatch'
-for rule in "-A FORWARD -j $CHAIN" "-A INPUT -j $INPUT_CHAIN"; do
-  jump_chain=FORWARD
-  [[ "$rule" == "-A INPUT "* ]] && jump_chain=INPUT
-  "$IPTABLES" -S "$jump_chain" 2>/dev/null | grep -Fqx -- "$rule" || fail_closed "owned jump is missing or changed: $rule"
-done
-"$IP6TABLES" -S FORWARD 2>/dev/null | grep -Fqx -- "-A FORWARD -j $CHAIN" || fail_closed 'owned IPv6 jump is missing or changed'
-"$IPTABLES" -t nat -S POSTROUTING 2>/dev/null | grep -Fqx -- "-A POSTROUTING -s $NET -j MASQUERADE" || fail_closed 'owned NAT rule is missing or changed'
+exactly_one_jump_at_one "$IPTABLES" FORWARD "-A FORWARD -j $CHAIN" || fail_closed 'owned IPv4 FORWARD jump is missing, duplicated, or not first'
+exactly_one_jump_at_one "$IPTABLES" INPUT "-A INPUT -j $INPUT_CHAIN" || fail_closed 'owned IPv4 INPUT jump is missing, duplicated, or not first'
+exactly_one_jump_at_one "$IP6TABLES" FORWARD "-A FORWARD -j $CHAIN" || fail_closed 'owned IPv6 FORWARD jump is missing, duplicated, or not first'
+exactly_one_jump_at_one "$IP6TABLES" INPUT "-A INPUT -j $INPUT6_CHAIN" || fail_closed 'owned IPv6 INPUT jump is missing, duplicated, or not first'
+exactly_one "$("$IPTABLES" -t nat -S POSTROUTING 2>/dev/null)" "-A POSTROUTING -s $NET -j MASQUERADE" || fail_closed 'owned NAT rule is missing, duplicated, or changed'
 # Validate the complete managed policy, not merely its marker, before deletion.
 for rule in \
   "-A $CHAIN -m comment --comment $MARKER" \

@@ -6,7 +6,7 @@ readonly IP=/usr/sbin/ip IPTABLES=/usr/sbin/iptables IP6TABLES=/usr/sbin/ip6tabl
 readonly NETNS_NAME=fieldbook-sandbox VETH_HOST=fb-sandbox0 VETH_NS=fb-sandbox1
 readonly HOST_IP=10.200.2.1 NS_IP=10.200.2.2 PROXY_HOST=192.168.10.252 PROXY_PORT=8318
 readonly CHAIN=FIELDBOOK_SANDBOX INPUT_CHAIN=FIELDBOOK_SANDBOX_INPUT INPUT6_CHAIN=FIELDBOOK_SANDBOX_INPUT6 NET=10.200.2.0/24
-readonly STATE_DIR=/var/lib/fieldbook-sandbox STATE_FILE="$STATE_DIR/runtime-state.conf" STATE_OWNER=root:root
+readonly STATE_DIR=/var/lib/fieldbook-sandbox STATE_FILE="$STATE_DIR/runtime-state.conf" JOURNAL_FILE="$STATE_DIR/setup-journal.conf" STATE_OWNER=root:root
 readonly MARKER=fieldbook-sandbox-ownership-marker
 changed_ip_forward=0
 state_created=0
@@ -18,7 +18,20 @@ object_exists() {
   "$IPTABLES" -S "$CHAIN" >/dev/null 2>&1 ||
   "$IP6TABLES" -S "$CHAIN" >/dev/null 2>&1 ||
   "$IPTABLES" -t nat -S POSTROUTING 2>/dev/null | grep -F -- "-s $NET -j MASQUERADE" >/dev/null ||
-  "$IPTABLES" -S INPUT 2>/dev/null | grep -F -- "-j $INPUT_CHAIN" >/dev/null
+  "$IPTABLES" -S INPUT 2>/dev/null | grep -F -- "-j $INPUT_CHAIN" >/dev/null ||
+  "$IP6TABLES" -S INPUT 2>/dev/null | grep -F -- "-j $INPUT6_CHAIN" >/dev/null
+}
+exactly_one_rule() {
+  local table=$1 chain=$2 rule=$3
+  [[ "$("$table" -S "$chain" 2>/dev/null | grep -Fxc -- "$rule")" == 1 ]]
+}
+exactly_one_jump_at_one() {
+  local table=$1 chain=$2 rule=$3
+  mapfile -t _rules < <("$table" -S "$chain" 2>/dev/null)
+  [[ "${#_rules[@]}" -ge 1 && "${_rules[0]}" == "$rule" && "$(printf '%s\n' "${_rules[@]}" | grep -Fxc -- "$rule")" == 1 ]]
+}
+exactly_one_nat() {
+  [[ "$("$IPTABLES" -t nat -S POSTROUTING 2>/dev/null | grep -Fxc -- "-A POSTROUTING -s $NET -j MASQUERADE")" == 1 ]]
 }
 # Rollback uses the same ownership boundary as teardown.  This function is
 # deliberately read-only: callers must not issue a destructive command unless
@@ -71,7 +84,23 @@ cleanup() {
   trap - EXIT
   (( status == 0 )) && exit 0
   # Any identity/policy mismatch means zero destructive calls and state retained.
-  if ! state_created || ! rollback_identity_valid; then exit "$status"; fi
+  # state_created is numeric; `! state_created` executes 0/1 as a command and
+  # therefore never tests the flag.  A partial journal is enough to enter the
+  # per-object rollback path, while identity mismatches remain fail-closed.
+  if (( state_created != 1 )); then exit "$status"; fi
+  # A journal without complete identity is intentionally retained.  It marks
+  # the setup as recoverable, but never authorizes guessing at object identity.
+  # The privileged reconciliation command can inspect this phase and remove
+  # only objects that independently pass the same identity checks.
+  if ! rollback_identity_valid; then
+    printf 'fieldbook sandbox setup failed during partial phase; state and journal retained for safe reconciliation\n' >&2
+    exit "$status"
+  fi
+  exactly_one_jump_at_one "$IPTABLES" FORWARD "-A FORWARD -j $CHAIN" || exit "$status"
+  exactly_one_jump_at_one "$IP6TABLES" FORWARD "-A FORWARD -j $CHAIN" || exit "$status"
+  exactly_one_jump_at_one "$IPTABLES" INPUT "-A INPUT -j $INPUT_CHAIN" || exit "$status"
+  exactly_one_jump_at_one "$IP6TABLES" INPUT "-A INPUT -j $INPUT6_CHAIN" || exit "$status"
+  exactly_one_nat || exit "$status"
   "$IPTABLES" -D FORWARD -j "$CHAIN" || rc=1; "$IP6TABLES" -D FORWARD -j "$CHAIN" || rc=1
   "$IPTABLES" -D INPUT -j "$INPUT_CHAIN" || rc=1; "$IP6TABLES" -D INPUT -j "$INPUT6_CHAIN" || rc=1; "$IPTABLES" -t nat -D POSTROUTING -s "$NET" -j MASQUERADE || rc=1
   "$IPTABLES" -F "$CHAIN" || rc=1; "$IPTABLES" -X "$CHAIN" || rc=1; "$IP6TABLES" -F "$CHAIN" || rc=1; "$IP6TABLES" -X "$CHAIN" || rc=1
@@ -79,7 +108,7 @@ cleanup() {
   "$IP6TABLES" -F "$INPUT6_CHAIN" || rc=1; "$IP6TABLES" -X "$INPUT6_CHAIN" || rc=1
   if (( changed_ip_forward )); then "$SYSCTL" -w "net.ipv4.ip_forward=$old_ip_forward" >/dev/null || rc=1; fi
   "$IP" link del "$VETH_HOST" >/dev/null 2>&1 || rc=1; "$IP" netns del "$NETNS_NAME" >/dev/null 2>&1 || rc=1
-  if (( rc == 0 )); then rm -f "$STATE_FILE" || rc=1; fi
+  if (( rc == 0 )); then rm -f "$STATE_FILE" "$JOURNAL_FILE" || rc=1; fi
   exit $(( rc == 0 ? status : 1 ))
 }
 trap cleanup EXIT
@@ -93,20 +122,30 @@ uplink="${routes[0]#* dev }"; uplink="${uplink%% *}"
 [[ -n "$uplink" && "$uplink" != dev && "$uplink" != via ]] || fail 'could not parse default-route interface'
 "$IP" link show dev "$uplink" >/dev/null || fail 'default-route interface unavailable'
 old_ip_forward="$("$SYSCTL" -n net.ipv4.ip_forward)"
+# This journal is written before each mutation.  It is intentionally data, not
+# shell, so a killed setup can be reconciled without guessing ownership.
+journal_phase() { printf 'phase=%s\n' "$1" >"$JOURNAL_FILE"; chown root:root "$JOURNAL_FILE"; chmod 600 "$JOURNAL_FILE"; }
+journal_phase marker
 # The marker is durable before the first namespace/firewall mutation.
 tmp_state="$STATE_DIR/.runtime-state.$$"
 ( umask 077; printf '%s\n' 'owner=fieldbook-sandbox' 'version=3' "netns=$NETNS_NAME" 'netns_inode=0' "veth_host=$VETH_HOST" "veth_ns=$VETH_NS" 'host_ifindex=0' 'ns_ifindex=0' "host_ip=$HOST_IP/24" "ns_ip=$NS_IP/24" "net=$NET" "uplink=$uplink" "proxy=$PROXY_HOST:$PROXY_PORT" "chain=$CHAIN" "input_chain=$INPUT_CHAIN" "input6_chain=$INPUT6_CHAIN" "old_ip_forward=$old_ip_forward" "changed_ip_forward=1" ) >"$tmp_state"
 chown root:root "$tmp_state"; chmod 600 "$tmp_state"; mv -f "$tmp_state" "$STATE_FILE"; state_created=1
 "$IP" netns add "$NETNS_NAME"
+journal_phase netns
+journal_phase veth
 "$IP" link add "$VETH_HOST" type veth peer name "$VETH_NS"
+journal_phase veth_move
 "$IP" link set "$VETH_NS" netns "$NETNS_NAME"
 netns_inode=$(stat -Lc '%i' "/var/run/netns/$NETNS_NAME" 2>/dev/null || true); host_ifindex=$("$IP" -o link show dev "$VETH_HOST" | awk -F: '{print $1}'); ns_ifindex=$("$IP" -n "$NETNS_NAME" -o link show dev "$VETH_NS" | awk -F: '{print $1}')
 [[ "$netns_inode" =~ ^[0-9]+$ && "$host_ifindex" =~ ^[0-9]+$ && "$ns_ifindex" =~ ^[0-9]+$ ]] || fail 'could not record managed topology identity'
 ( umask 077; printf '%s\n' 'owner=fieldbook-sandbox' 'version=3' "netns=$NETNS_NAME" "netns_inode=$netns_inode" "veth_host=$VETH_HOST" "veth_ns=$VETH_NS" "host_ifindex=$host_ifindex" "ns_ifindex=$ns_ifindex" "host_ip=$HOST_IP/24" "ns_ip=$NS_IP/24" "net=$NET" "uplink=$uplink" "proxy=$PROXY_HOST:$PROXY_PORT" "chain=$CHAIN" "input_chain=$INPUT_CHAIN" "input6_chain=$INPUT6_CHAIN" "old_ip_forward=$old_ip_forward" "changed_ip_forward=1" ) >"$tmp_state"; chown root:root "$tmp_state"; chmod 600 "$tmp_state"; mv -f "$tmp_state" "$STATE_FILE"
 "$IP" addr add "$HOST_IP/24" dev "$VETH_HOST"; "$IP" link set "$VETH_HOST" up
 "$IP" -n "$NETNS_NAME" addr add "$NS_IP/24" dev "$VETH_NS"; "$IP" -n "$NETNS_NAME" link set "$VETH_NS" up; "$IP" -n "$NETNS_NAME" link set lo up
+journal_phase topology
 "$IP" -n "$NETNS_NAME" route add default via "$HOST_IP"
-"$SYSCTL" -w net.ipv4.ip_forward=1 >/dev/null; changed_ip_forward=1
+journal_phase ip_forward
+"$SYSCTL" -w net.ipv4.ip_forward=1 >/dev/null
+changed_ip_forward=1
 "$IPTABLES" -N "$CHAIN"; "$IPTABLES" -A "$CHAIN" -m comment --comment "$MARKER"
 "$IPTABLES" -A "$CHAIN" ! -i "$VETH_HOST" ! -o "$VETH_HOST" -j RETURN
 "$IPTABLES" -A "$CHAIN" -i "$VETH_HOST" -o "$uplink" -s "$NET" -d "$PROXY_HOST" -p tcp --dport "$PROXY_PORT" -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
@@ -123,6 +162,7 @@ netns_inode=$(stat -Lc '%i' "/var/run/netns/$NETNS_NAME" 2>/dev/null || true); h
 "$IP6TABLES" -N "$CHAIN"; "$IP6TABLES" -A "$CHAIN" -m comment --comment "$MARKER"; "$IP6TABLES" -A "$CHAIN" ! -i "$VETH_HOST" ! -o "$VETH_HOST" -j RETURN; "$IP6TABLES" -A "$CHAIN" -i "$VETH_HOST" -j DROP; "$IP6TABLES" -A "$CHAIN" -o "$VETH_HOST" -j DROP; "$IP6TABLES" -A "$CHAIN" -j DROP; "$IP6TABLES" -I FORWARD 1 -j "$CHAIN"
 "$IP6TABLES" -N "$INPUT6_CHAIN"; "$IP6TABLES" -A "$INPUT6_CHAIN" -m comment --comment "$MARKER"; "$IP6TABLES" -A "$INPUT6_CHAIN" ! -i "$VETH_HOST" -j RETURN; "$IP6TABLES" -A "$INPUT6_CHAIN" -i "$VETH_HOST" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; "$IP6TABLES" -A "$INPUT6_CHAIN" -i "$VETH_HOST" -j DROP; "$IP6TABLES" -I INPUT 1 -j "$INPUT6_CHAIN"
 "$IPTABLES" -t nat -A POSTROUTING -s "$NET" -j MASQUERADE
+journal_phase firewall
 "$IP" -n "$NETNS_NAME" route get "$PROXY_HOST" | grep -Eq "dev $VETH_NS"
 "$IPTABLES" -S "$CHAIN" | grep -F -- "-d $PROXY_HOST -p tcp --dport $PROXY_PORT" >/dev/null
 "$IPTABLES" -S INPUT | grep -F -- "-j $INPUT_CHAIN" >/dev/null
