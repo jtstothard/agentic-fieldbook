@@ -1,81 +1,76 @@
 #!/bin/bash
-# Source for the installed Fieldbook sandbox teardown runtime.
+# Root-installed Fieldbook sandbox teardown runtime (extensionless install path).
 set -Eeuo pipefail
-readonly IP=/usr/sbin/ip
-readonly IPTABLES=/usr/sbin/iptables
-readonly IP6TABLES=/usr/sbin/ip6tables
-readonly SYSCTL=/usr/sbin/sysctl
-readonly NETNS_NAME=fieldbook-sandbox
-readonly VETH_HOST=fb-sandbox0
-readonly CHAIN=FIELDBOOK_SANDBOX
-readonly NET=10.200.2.0/24
-readonly STATE_DIR=/var/lib/fieldbook-sandbox
-readonly STATE_FILE="$STATE_DIR/runtime-state.conf"
+readonly IP=/usr/sbin/ip IPTABLES=/usr/sbin/iptables IP6TABLES=/usr/sbin/ip6tables SYSCTL=/usr/sbin/sysctl
+readonly NETNS_NAME=fieldbook-sandbox VETH_HOST=fb-sandbox0 VETH_NS=fb-sandbox1 HOST_IP=10.200.2.1 NS_IP=10.200.2.2
+readonly CHAIN=FIELDBOOK_SANDBOX INPUT_CHAIN=FIELDBOOK_SANDBOX_INPUT NET=10.200.2.0/24
+readonly STATE_DIR=/var/lib/fieldbook-sandbox STATE_FILE="$STATE_DIR/runtime-state.conf"
+readonly MARKER=fieldbook-sandbox-ownership-marker
 
 (( EUID == 0 )) || { printf 'must run as root\n' >&2; exit 1; }
 
-# Read runtime state file if it exists
-changed_ip_forward=0
-old_ip_forward=""
-if [[ -r "$STATE_FILE" ]]; then
-  # Source the state file (it's simple variable assignments)
-  changed_ip_forward=$(grep '^changed_ip_forward=' "$STATE_FILE" | cut -d= -f2)
-  old_ip_forward=$(grep '^old_ip_forward=' "$STATE_FILE" | cut -d= -f2)
-  # Remove state file
-  rm -f "$STATE_FILE"
-fi
+fail_closed() { printf 'Failing closed: no object is deleted: %s\n' "$*" >&2; exit 1; }
+[[ -f "$STATE_FILE" ]] || fail_closed 'runtime state is missing; nothing will be deleted (Foreign objects are never deleted)'
+[[ "$(stat -c '%u:%g:%a' "$STATE_FILE" 2>/dev/null || true)" == 0:0:600 ]] || fail_closed 'runtime state ownership or mode is invalid'
+grep -q '^owner=fieldbook-sandbox$' "$STATE_FILE" || fail_closed 'malformed/missing state; refusing destructive cleanup'
 
-# Verify ownership before deletion (HIGH)
-delete_netns=0
-delete_veth=0
-if "$IP" netns show "$NETNS_NAME" >/dev/null 2>&1; then
-  # Verify namespace identity: check if it has expected veth link
-  if "$IP" -n "$NETNS_NAME" link show dev fb-sandbox1 >/dev/null 2>&1; then
-    delete_netns=1
-  else
-    printf 'WARNING: namespace %s exists but has unexpected topology (missing fb-sandbox1)\n' "$NETNS_NAME" >&2
-    printf 'Failing closed: not deleting namespace\n' >&2
-  fi
-fi
+# Parse untrusted state as data, never by sourcing it.  Every value is fixed or
+# strongly constrained, and the complete key set is required before inspection.
+mapfile -t state_keys < <(sed -n 's/^\([a-z_]*\)=.*$/\1/p' "$STATE_FILE")
+expected_keys=(owner version netns veth_host veth_ns host_ip ns_ip net uplink proxy chain input_chain old_ip_forward changed_ip_forward)
+[[ "${#state_keys[@]}" -eq "${#expected_keys[@]}" ]] || fail_closed 'runtime state is partial or has unknown lines'
+for key in "${expected_keys[@]}"; do
+  [[ "$(printf '%s\n' "${state_keys[@]}" | grep -cx "$key")" == 1 ]] || fail_closed "runtime state key is missing or duplicated: $key"
+done
+state_value() { awk -F= -v key="$1" '$1 == key { print substr($0, index($0, "=") + 1) }' "$STATE_FILE"; }
+owner=$(state_value owner); version=$(state_value version); netns=$(state_value netns)
+veth_host=$(state_value veth_host); veth_ns=$(state_value veth_ns); host_ip=$(state_value host_ip); ns_ip=$(state_value ns_ip)
+net=$(state_value net); uplink=$(state_value uplink); proxy=$(state_value proxy)
+chain=$(state_value chain); input_chain=$(state_value input_chain)
+old_ip_forward=$(state_value old_ip_forward); changed_ip_forward=$(state_value changed_ip_forward)
+[[ "$owner" == fieldbook-sandbox && "$version" == 3 && "$netns" == "$NETNS_NAME" ]] || fail_closed 'runtime state marker or version is invalid'
+[[ "$veth_host" == "$VETH_HOST" && "$veth_ns" == "$VETH_NS" && "$host_ip" == "$HOST_IP/24" && "$ns_ip" == "$NS_IP/24" ]] || fail_closed 'runtime topology in state is not managed topology'
+[[ "$net" == "$NET" && "$uplink" =~ ^[a-zA-Z0-9_.:-]+$ && "$proxy" =~ ^192\.168\.10\.252:8318$ ]] || fail_closed 'runtime route or proxy state is invalid'
+[[ "$chain" == "$CHAIN" && "$input_chain" == "$INPUT_CHAIN" && "$old_ip_forward" =~ ^[01]$ && "$changed_ip_forward" == 1 ]] || fail_closed 'runtime policy state is invalid'
 
-if "$IP" link show "$VETH_HOST" type veth >/dev/null 2>&1; then
-  # Verify link type and address
-  link_addr=$("$IP" -o addr show dev "$VETH_HOST" | grep -oP 'inet \K[\d.]+')
-  if [[ "$link_addr" == "10.200.2.1" ]]; then
-    delete_veth=1
-  else
-    printf 'WARNING: link %s exists but has unexpected address %s\n' "$VETH_HOST" "$link_addr" >&2
-    printf 'Failing closed: not deleting link\n' >&2
-  fi
-fi
+# The complete topology and exact policy are checked before the first deletion.
+# A mismatch aborts without even removing a jump or NAT rule.
+iptables_chain() { "$IPTABLES" -S "$1" 2>/dev/null; }
+ip6_chain() { "$IP6TABLES" -S "$1" 2>/dev/null; }
+require_line() { grep -Fqx -- "$2" <<<"$1"; }
+[[ "$("$IP" netns list | awk '{print $1}' | grep -cx "$NETNS_NAME")" == 1 ]] || fail_closed 'managed namespace is absent or ambiguous'
+"$IP" link show "$VETH_HOST" type veth >/dev/null 2>&1 || fail_closed 'managed host veth is absent or not veth'
+"$IP" -o addr show dev "$VETH_HOST" | grep -Eq "inet $HOST_IP/24( |$)" || fail_closed 'managed host veth address 10.200.2.1 does not match'
+"$IP" -n "$NETNS_NAME" link show dev "$VETH_NS" >/dev/null 2>&1 || fail_closed 'managed namespace peer is absent'
+"$IP" -n "$NETNS_NAME" -o addr show dev "$VETH_NS" | grep -Eq "inet $NS_IP/24( |$)" || fail_closed 'managed namespace address does not match'
+"$IP" -n "$NETNS_NAME" route show default | grep -Fqx "default via $HOST_IP dev $VETH_NS" || fail_closed 'managed namespace route does not match'
+"$IP" link show dev "$uplink" >/dev/null 2>&1 || fail_closed 'recorded uplink is absent'
 
-# Delete NAT rule (not route-dependent)
-"$IPTABLES" -t nat -D POSTROUTING -s "$NET" -j MASQUERADE 2>/dev/null || true
+require_line "iptables_chain "$CHAIN"" "-A $CHAIN -m comment --comment $MARKER" || fail_closed 'IPv4 chain marker mismatch'
+require_line "iptables_chain "$INPUT_CHAIN"" "-A $INPUT_CHAIN -m comment --comment $MARKER" || fail_closed 'INPUT chain marker mismatch'
+require_line "ip6_chain "$CHAIN"" "-A $CHAIN -m comment --comment $MARKER" || fail_closed 'IPv6 chain marker mismatch'
+for rule in "-A FORWARD -j $CHAIN" "-A INPUT -j $INPUT_CHAIN"; do
+  "$IPTABLES" -S "${rule#-A }" 2>/dev/null | grep -Fqx -- "$rule" || fail_closed "owned jump is missing or changed: $rule"
+done
+"$IP6TABLES" -S FORWARD 2>/dev/null | grep -Fqx -- "-A FORWARD -j $CHAIN" || fail_closed 'owned IPv6 jump is missing or changed'
+"$IPTABLES" -t nat -S POSTROUTING 2>/dev/null | grep -Fqx -- "-A POSTROUTING -s $NET -j MASQUERADE" || fail_closed 'owned NAT rule is missing or changed'
 
-# Restore ip_forward if we changed it
-if (( changed_ip_forward )) && [[ -n "$old_ip_forward" ]]; then
-  "$SYSCTL" -w "net.ipv4.ip_forward=$old_ip_forward" >/dev/null 2>&1 || true
-fi
-
-# Delete only the dedicated chain and objects owned by this sandbox.
-"$IPTABLES" -D FORWARD -j "$CHAIN" 2>/dev/null || true
-"$IPTABLES" -F "$CHAIN" 2>/dev/null || true
-"$IPTABLES" -X "$CHAIN" 2>/dev/null || true
-"$IP6TABLES" -D FORWARD -j "$CHAIN" 2>/dev/null || true
-"$IP6TABLES" -F "$CHAIN" 2>/dev/null || true
-"$IP6TABLES" -X "$CHAIN" 2>/dev/null || true
-
-# Delete verified network objects
-if (( delete_veth )); then
-  "$IP" link del "$VETH_HOST" 2>/dev/null || true
-fi
-if (( delete_netns )); then
-  "$IP" netns del "$NETNS_NAME" 2>/dev/null || true
-fi
-
-# Clean up state directory if empty
-if [[ -d "$STATE_DIR" ]]; then
+rc=0
+"$IPTABLES" -D FORWARD -j "$CHAIN" || rc=1
+"$IPTABLES" -D INPUT -j "$INPUT_CHAIN" || rc=1
+"$IP6TABLES" -D FORWARD -j "$CHAIN" || rc=1
+"$IPTABLES" -t nat -D POSTROUTING -s "$NET" -j MASQUERADE || rc=1
+"$IPTABLES" -F "$CHAIN" || rc=1; "$IPTABLES" -X "$CHAIN" || rc=1
+"$IPTABLES" -F "$INPUT_CHAIN" || rc=1; "$IPTABLES" -X "$INPUT_CHAIN" || rc=1
+"$IP6TABLES" -F "$CHAIN" || rc=1; "$IP6TABLES" -X "$CHAIN" || rc=1
+(( changed_ip_forward == 1 )) && "$SYSCTL" -w "net.ipv4.ip_forward=$old_ip_forward" >/dev/null || rc=1
+"$IP" link del "$VETH_HOST" || rc=1
+"$IP" netns del "$NETNS_NAME" || rc=1
+if (( rc == 0 )); then
+  rm -f "$STATE_FILE" || rc=1
   rmdir "$STATE_DIR" 2>/dev/null || true
+else
+  printf 'teardown incomplete; runtime state retained for retry\n' >&2
 fi
-
+(( rc == 0 )) || exit 1
 printf 'Fieldbook sandbox teardown complete\n'

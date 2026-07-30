@@ -56,7 +56,9 @@ The sandbox runs in a dedicated Linux network namespace (`fieldbook-sandbox`) wi
 
 ### 2. Traffic Scoping
 
-The `FIELDBOOK_SANDBOX` iptables chain applies ONLY to sandbox traffic:
+The `FIELDBOOK_SANDBOX` iptables chain applies ONLY to sandbox traffic. A
+separate `FIELDBOOK_SANDBOX_INPUT` hook protects host-local listeners from
+sandbox ingress while preserving established return and non-sandbox traffic:
 
 ```bash
 # Non-sandbox traffic returns immediately
@@ -76,7 +78,8 @@ The jump to `FIELDBOOK_SANDBOX` is inserted at the earliest position in the FORW
 iptables -I FORWARD 1 -j FIELDBOOK_SANDBOX
 ```
 
-This prevents bypass by earlier ACCEPT rules. Any pre-existing rule at position 1 is recorded and restored on teardown.
+This prevents bypass by earlier ACCEPT rules. Teardown removes only the exact owned jump after verifying the marker; it does
+not replay displaced rules or create duplicates.
 
 ### 4. Egress Allowlist
 
@@ -151,12 +154,12 @@ On setup failure, the cleanup function:
 
 Teardown:
 
-1. Reads state file to get prior `ip_forward` value
+1. Reads the root-owned atomic state file to get prior `ip_forward` value
 2. Deletes NAT rule (not route-dependent: `-s 10.200.2.0/24 -j MASQUERADE`)
 3. Restores `ip_forward` only if this service changed it
 4. Verifies namespace and veth topology before deletion
-5. Fails closed on topology mismatch instead of blind deletion
-6. Cleans up state file and directory
+5. Fails closed on topology/ownership mismatch instead of blind deletion
+6. Retains state and returns nonzero if any cleanup operation fails
 
 ### NAT Rule Exactness
 
@@ -238,9 +241,9 @@ The scripts are installed as root-owned executables under `/usr/local/libexec`:
 
 ```bash
 sudo install -o root -g root -m 755 \
-  systemd/fieldbook-sandbox-setup.sh /usr/local/libexec/
+  systemd/fieldbook-sandbox-setup.sh /usr/local/libexec/fieldbook-sandbox-setup
 sudo install -o root -g root -m 755 \
-  systemd/fieldbook-sandbox-teardown.sh /usr/local/libexec/
+  systemd/fieldbook-sandbox-teardown.sh /usr/local/libexec/fieldbook-sandbox-teardown
 ```
 
 ### Systemd Unit
@@ -251,8 +254,8 @@ The systemd unit references the installed copy:
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/libexec/fieldbook-sandbox-setup.sh
-ExecStop=/usr/local/libexec/fieldbook-sandbox-teardown.sh
+ExecStart=/usr/local/libexec/fieldbook-sandbox-setup
+ExecStop=/usr/local/libexec/fieldbook-sandbox-teardown
 ```
 
 ### Requirements

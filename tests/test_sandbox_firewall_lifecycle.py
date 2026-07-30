@@ -13,6 +13,8 @@ import pytest
 # Paths to sandbox scripts
 SETUP_SCRIPT = Path(__file__).parent.parent / "systemd" / "fieldbook-sandbox-setup.sh"
 TEARDOWN_SCRIPT = Path(__file__).parent.parent / "systemd" / "fieldbook-sandbox-teardown.sh"
+INSTALLER_SCRIPT = Path(__file__).parent.parent / "systemd" / "install-fieldbook-sandbox.sh"
+SERVICE_FILE = Path(__file__).parent.parent / "systemd" / "fieldbook-sandbox.service"
 
 
 def read_script_lines(path: Path) -> list[str]:
@@ -104,27 +106,11 @@ class TestForwardJumpOrdering:
         assert not found_append, "Found -A FORWARD append (should be -I FORWARD 1)"
         assert found_insert, "Missing -I FORWARD 1 insert for jump rule"
 
-    def test_displaced_rule_tracking(self):
-        """Must track and restore any displaced FORWARD rule."""
+    def test_no_duplicate_restoration_logic(self):
+        """Insertion is transactional; displaced rules are never replayed."""
         lines = read_script_lines(SETUP_SCRIPT)
 
-        # Check for variable to track displaced rule
-        found_variable = False
-        for line in lines:
-            if 'displaced_rule=' in line:
-                found_variable = True
-                break
-
-        assert found_variable, "Missing displaced_rule variable"
-
-        # Check restoration in cleanup
-        found_restore = False
-        for line in lines:
-            if 'displaced_rule' in line and '-A' in line and '-I' in line:
-                found_restore = True
-                break
-
-        assert found_restore, "Missing restoration of displaced rule"
+        assert not any('displaced_rule' in line for line in lines)
 
 
 class TestNatIpForwardLifecycle:
@@ -162,7 +148,7 @@ class TestNatIpForwardLifecycle:
         for line in lines:
             if 'STATE_DIR=' in line or 'STATE_FILE=' in line:
                 found_state_dir = True
-            if 'cat > "$STATE_FILE"' in line or 'echo' in line and 'STATE_FILE' in line:
+            if 'tmp_state' in line and 'mv -f' in line:
                 found_state_file = True
 
         assert found_state_dir, "Missing state directory definition"
@@ -180,6 +166,8 @@ class TestNatIpForwardLifecycle:
                 assert '-o' not in line or '$uplink' not in line, \
                     f"NAT rule is route-dependent: {line}"
                 # Must match source network only
+                if 'grep -F' in line:
+                    continue
                 assert '-s "$NET"' in line or '-s 10.200.2.0/24' in line, \
                     f"NAT rule missing source network: {line}"
 
@@ -256,7 +244,7 @@ class TestOwnershipVerification:
         found_verify = False
         found_delete = False
         for line in lines:
-            if 'netns show' in line or 'ip netns show' in line:
+            if 'netns list' in line or 'ip netns show' in line:
                 found_verify = True
             if 'netns del' in line and found_verify:
                 found_delete = True
@@ -286,9 +274,9 @@ class TestOwnershipVerification:
         found_warning = False
         found_fail_closed = False
         for line in lines:
-            if 'WARNING' in line and 'topology' in line:
+            if 'refusing collision' in line or 'malformed/missing state' in line or 'Foreign objects' in line:
                 found_warning = True
-            if 'Failing closed' in line or 'not deleting' in line:
+            if 'Never destroy a collision' in line or 'no object is deleted' in line:
                 found_fail_closed = True
 
         assert found_warning, "Missing warning for topology mismatch"
@@ -382,6 +370,16 @@ class TestStaticVerification:
                 continue
             if '/tmp/fieldbook' in line or '/var/run/fieldbook' in line:
                 pytest.fail(f"Found hardcoded path: {line}")
+
+    def test_installed_runtime_packaging_matches_unit(self):
+        """Installer and unit must agree on root-owned extensionless paths."""
+        installer = INSTALLER_SCRIPT.read_text()
+        service = SERVICE_FILE.read_text()
+        assert 'fieldbook-sandbox-${name}.sh' in installer
+        assert '"$TARGET_DIR/fieldbook-sandbox-${name}"' in installer
+        assert 'ExecStart=/usr/local/libexec/fieldbook-sandbox-setup\n' in service
+        assert 'ExecStop=/usr/local/libexec/fieldbook-sandbox-teardown\n' in service
+        assert '.sh' not in service
 
 
 class TestRepeatedStartStop:

@@ -129,8 +129,10 @@ class ClaudeCodeAdapter(DispatchAdapter):
 
     def _validate_network_policy(self) -> None:
         """Reject configuration which cannot be enforced by the installed netns."""
-        if self.netns_name not in {_SANDBOX_NETNS, _SANDBOX_TEST_NETNS}:
-            raise ValueError("netns_name must identify the managed Fieldbook sandbox")
+        # Production configuration may never select the private test namespace.
+        # Tests use the explicit runner seam rather than changing this binding.
+        if self.netns_name != _SANDBOX_NETNS:
+            raise ValueError("netns_name must be the managed fieldbook-sandbox")
         if self.allowed_egress_host != "192.168.10.252" or self.allowed_egress_port != 8318:
             raise ValueError("egress policy must match the managed LiteLLM endpoint")
         parsed = urlparse(self.anthropic_base_url)
