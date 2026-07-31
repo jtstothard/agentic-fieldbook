@@ -172,7 +172,7 @@ changed_ip_forward=1
 "$IPTABLES" -t nat -A POSTROUTING -s "$NET" -j MASQUERADE
 journal_phase firewall
 "$IP" -n "$NETNS_NAME" route get "$PROXY_HOST" | grep -Eq "dev $VETH_NS"
-"$IPTABLES" -S "$CHAIN" | grep -F -- "-d $PROXY_HOST -p tcp --dport $PROXY_PORT" >/dev/null
+"$IPTABLES" -S "$CHAIN" | grep -F -- "$PROXY_HOST" | grep -F -- "--dport $PROXY_PORT" >/dev/null
 "$IPTABLES" -S INPUT | grep -F -- "-j $INPUT_CHAIN" >/dev/null
 ready=0
 for attempt in 1 2 3 4 5; do

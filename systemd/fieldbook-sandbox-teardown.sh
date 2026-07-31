@@ -20,7 +20,7 @@ grep -Eq '^phase=(marker|netns|veth|veth_move|topology|ip_forward|firewall)$' "$
 
 # Parse untrusted state as data, never by sourcing it.  Every value is fixed or
 # strongly constrained, and the complete key set is required before inspection.
-mapfile -t state_keys < <(sed -n 's/^\([a-z_]*\)=.*$/\1/p' "$STATE_FILE")
+mapfile -t state_keys < <(sed -n 's/^\([a-z_][a-z_0-9]*\)=.*$/\1/p' "$STATE_FILE")
 expected_keys=(owner version netns netns_inode veth_host veth_ns host_ifindex ns_ifindex host_ip ns_ip net uplink proxy chain input_chain input6_chain old_ip_forward changed_ip_forward)
 [[ "${#state_keys[@]}" -eq "${#expected_keys[@]}" ]] || fail_closed 'runtime state is partial or has unknown lines'
 for key in "${expected_keys[@]}"; do
@@ -62,7 +62,7 @@ actual_ns_ifindex=$("$IP" -n "$NETNS_NAME" -o link show dev "$VETH_NS" | awk -F:
 "$IP" -o link show dev "$VETH_HOST" | grep -Eq "@if${ns_ifindex}([ :]|$)" || fail_closed 'host veth peer linkage does not match'
 "$IP" -n "$NETNS_NAME" -o link show dev "$VETH_NS" | grep -Eq "@if${host_ifindex}([ :]|$)" || fail_closed 'namespace veth peer linkage does not match'
 "$IP" -n "$NETNS_NAME" -o addr show dev "$VETH_NS" | grep -Eq "inet $NS_IP/24( |$)" || fail_closed 'managed namespace address does not match'
-"$IP" -n "$NETNS_NAME" route show default | grep -Fqx "default via $HOST_IP dev $VETH_NS" || fail_closed 'managed namespace route does not match'
+"$IP" -n "$NETNS_NAME" route show default | grep -Eq "default[[:space:]]+via[[:space:]]+$HOST_IP .*dev[[:space:]]+$VETH_NS" || fail_closed 'managed namespace route does not match'
 "$IP" link show dev "$uplink" >/dev/null 2>&1 || fail_closed 'recorded uplink is absent'
 
 require_line "$(iptables_chain "$CHAIN")" "-A $CHAIN -m comment --comment $MARKER" || fail_closed 'IPv4 chain marker mismatch'
