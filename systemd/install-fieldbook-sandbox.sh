@@ -1,13 +1,24 @@
 #!/bin/bash
 # Install the sandbox runtime as root-owned files before enabling the unit.
 set -Eeuo pipefail
-(( EUID == 0 )) || { printf 'must run as root\n' >&2; exit 1; }
+if [[ ${FIELDBOOK_SANDBOX_TEST_SKIP_ROOT:-0} != 1 ]] && (( EUID != 0 )); then
+  printf 'must run as root\n' >&2
+  exit 1
+fi
 readonly SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly TARGET_DIR=/usr/local/libexec STATE_DIR=/var/lib/fieldbook-sandbox
+# Test-only path overrides keep behavioral tests isolated from the host. These
+# are intentionally undocumented for operators and require the test root seam.
+if [[ ${FIELDBOOK_SANDBOX_TEST_SKIP_ROOT:-0} == 1 ]]; then
+  readonly TARGET_DIR="${FIELDBOOK_SANDBOX_TEST_TARGET_DIR:-/usr/local/libexec}"
+  readonly STATE_DIR="${FIELDBOOK_SANDBOX_TEST_STATE_DIR:-/var/lib/fieldbook-sandbox}"
+else
+  readonly TARGET_DIR=/usr/local/libexec STATE_DIR=/var/lib/fieldbook-sandbox
+fi
 readonly NETNS_NAME=fieldbook-sandbox VETH_HOST=fb-sandbox0
 readonly CHAIN=FIELDBOOK_SANDBOX INPUT_CHAIN=FIELDBOOK_SANDBOX_INPUT INPUT6_CHAIN=FIELDBOOK_SANDBOX_INPUT6 NET=10.200.2.0/24
 case "${1:-}" in
-  ''|--help) printf 'Usage: %s\n' "$0"; exit 0 ;;
+  '') ;;
+  --help) printf 'Usage: %s\n' "$0"; exit 0 ;;
   *) printf 'usage: %s\n' "$0" >&2; exit 2 ;;
 esac
 

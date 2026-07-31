@@ -392,6 +392,80 @@ class TestInstallerEvidenceGate:
         assert '&&' not in evidence_gate_line or 'force' not in evidence_gate_line.lower()
 
 
+class TestInstallerBehavioralRefusal:
+    """Run the installer against isolated fake managed-sandbox evidence."""
+
+    @staticmethod
+    def _run_installer(tmp_path: Path, *args: str, evidence: bool = True):
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        state_dir = tmp_path / "state"
+        target_dir = tmp_path / "target"
+        if evidence:
+            state_dir.mkdir()
+            (state_dir / "runtime-state.conf").touch()
+            (state_dir / "setup-journal.conf").touch()
+
+            (fake_bin / "systemctl").write_text(
+                "#!/bin/sh\nprintf '%s\\n' 'active fieldbook-sandbox.service'\n"
+            )
+            (fake_bin / "ip").write_text(
+                "#!/bin/sh\n"
+                "case \"$*\" in\n"
+                "  'netns list') printf '%s\\n' 'fieldbook-sandbox (id: 7)' ;;\n"
+                "  'link show fb-sandbox0 type veth') printf '%s\\n' 'managed veth fb-sandbox0' ;;\n"
+                "esac\n"
+            )
+            rules = "-A INPUT -j FIELDBOOK_SANDBOX_INPUT\n-A FORWARD -j FIELDBOOK_SANDBOX\n"
+            (fake_bin / "iptables").write_text(
+                "#!/bin/sh\n"
+                "case \"$*\" in\n"
+                "  '-S FIELDBOOK_SANDBOX'|'-S FIELDBOOK_SANDBOX_INPUT') printf '%s' 'chain' ;;\n"
+                "  '-S INPUT'|'-S FORWARD') printf '%s' " + repr(rules) + " ;;\n"
+                "  '-t nat -S POSTROUTING') printf '%s' '-A POSTROUTING -s 10.200.2.0/24 -j MASQUERADE' ;;\n"
+                "esac\n"
+            )
+            (fake_bin / "ip6tables").write_text(
+                "#!/bin/sh\n"
+                "case \"$*\" in\n"
+                "  '-S FIELDBOOK_SANDBOX'|'-S FIELDBOOK_SANDBOX_INPUT6') printf '%s' 'chain' ;;\n"
+                "  '-S INPUT'|'-S FORWARD') printf '%s' '-A FORWARD -j FIELDBOOK_SANDBOX' ;;\n"
+                "esac\n"
+            )
+            for stub in fake_bin.iterdir():
+                stub.chmod(0o755)
+        env = os.environ.copy()
+        env.update({
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "FIELDBOOK_SANDBOX_TEST_SKIP_ROOT": "1",
+            "FIELDBOOK_SANDBOX_TEST_STATE_DIR": str(state_dir),
+            "FIELDBOOK_SANDBOX_TEST_TARGET_DIR": str(target_dir),
+        })
+        return subprocess.run(
+            ["bash", str(INSTALLER_SCRIPT), *args],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_no_flag_refuses_with_managed_evidence(self, tmp_path):
+        result = self._run_installer(tmp_path)
+        assert result.returncode == 1
+        assert "refusing upgrade" in result.stderr
+        assert "managed sandbox evidence" in result.stderr
+
+    def test_force_flag_is_rejected(self, tmp_path):
+        assert self._run_installer(tmp_path, "--force").returncode == 2
+
+    def test_migrate_flag_is_rejected(self, tmp_path):
+        assert self._run_installer(tmp_path, "--migrate").returncode == 2
+
+    def test_clean_environment_reaches_install_steps(self, tmp_path):
+        result = self._run_installer(tmp_path, evidence=False)
+        assert "refusing upgrade" not in result.stderr
+        assert result.returncode != 0
+
+
 class TestInstallerUpgradeSafety:
     """Installer must detect inactive legacy state without touching the host."""
 

@@ -12,7 +12,7 @@ sudo systemctl reset-failed fieldbook-sandbox.service || true
 sudo systemctl is-active fieldbook-sandbox.service   # must print inactive/failed, not active
 ```
 
-Do not use `--force` yet. Capture inspection output before deleting anything:
+Capture inspection output before deleting anything:
 
 ```bash
 sudo systemctl status fieldbook-sandbox.service --no-pager
@@ -105,4 +105,4 @@ sudo systemctl start fieldbook-sandbox.service
 sudo systemctl status fieldbook-sandbox.service --no-pager
 ```
 
-`--force`/`--migrate` exists only as an explicit operator acknowledgement after safe reconciliation. It does not perform reconciliation, rollback, or deletion and must not be used to bypass failed identity checks.
+The installer is invoked with no arguments. There is no `--force` or `--migrate` flag; commit 86ed3a1 removed them. Invoke `sudo systemd/install-fieldbook-sandbox.sh` with no arguments after clean-state proof.
