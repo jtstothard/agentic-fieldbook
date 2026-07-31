@@ -46,7 +46,9 @@ require_line() { grep -Fqx -- "$2" <<<"$1"; }
 exactly_one() { [[ "$(grep -Fxc -- "$2" <<<"$1")" == 1 ]]; }
 exactly_one_jump_at_one() {
   local table=$1 chain=$2 rule=$3
-  mapfile -t rules < <("$table" -S "$chain" 2>/dev/null)
+  # Filter out the -P policy line (always line 0 in iptables -S output) so
+  # rules[0] is the first actual -A rule, not the chain policy declaration.
+  mapfile -t rules < <("$table" -S "$chain" 2>/dev/null | grep '^-[AI] ')
   [[ "${#rules[@]}" -ge 1 && "${rules[0]}" == "$rule" && "$(printf '%s\n' "${rules[@]}" | grep -Fxc -- "$rule")" == 1 ]]
 }
 [[ "$("$IP" netns list | awk '{print $1}' | grep -cx "$NETNS_NAME")" == 1 ]] || fail_closed 'managed namespace is absent or ambiguous'
