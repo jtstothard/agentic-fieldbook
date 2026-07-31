@@ -6,7 +6,8 @@ readonly IP=/usr/sbin/ip IPTABLES=/usr/sbin/iptables IP6TABLES=/usr/sbin/ip6tabl
 readonly NETNS_NAME=fieldbook-sandbox VETH_HOST=fb-sandbox0 VETH_NS=fb-sandbox1
 readonly HOST_IP=10.200.2.1 NS_IP=10.200.2.2 PROXY_HOST=192.168.10.252 PROXY_PORT=8318
 readonly CHAIN=FIELDBOOK_SANDBOX INPUT_CHAIN=FIELDBOOK_SANDBOX_INPUT INPUT6_CHAIN=FIELDBOOK_SANDBOX_INPUT6 NET=10.200.2.0/24
-readonly STATE_DIR=/var/lib/fieldbook-sandbox STATE_FILE="$STATE_DIR/runtime-state.conf" JOURNAL_FILE="$STATE_DIR/setup-journal.conf" STATE_OWNER=root:root
+readonly STATE_DIR=/var/lib/fieldbook-sandbox
+readonly STATE_FILE="$STATE_DIR/runtime-state.conf" JOURNAL_FILE="$STATE_DIR/setup-journal.conf" STATE_OWNER=root:root
 readonly MARKER=fieldbook-sandbox-ownership-marker
 changed_ip_forward=0
 state_created=0

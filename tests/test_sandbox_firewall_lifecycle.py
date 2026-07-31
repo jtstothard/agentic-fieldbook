@@ -397,6 +397,13 @@ class TestInstallerBehavioralRefusal:
 
     @staticmethod
     def _run_installer(tmp_path: Path, *args: str, evidence: bool = True):
+        """Run the installer against fully isolated fake managed-sandbox evidence.
+
+        Stubs are ALWAYS created for ip/iptables/ip6tables/systemctl so the
+        installer never probes real host state, regardless of the evidence flag.
+        When evidence=False the stubs return no managed objects, simulating a
+        clean host.
+        """
         fake_bin = tmp_path / "bin"
         fake_bin.mkdir()
         state_dir = tmp_path / "state"
@@ -432,8 +439,14 @@ class TestInstallerBehavioralRefusal:
                 "  '-S INPUT'|'-S FORWARD') printf '%s' '-A FORWARD -j FIELDBOOK_SANDBOX' ;;\n"
                 "esac\n"
             )
-            for stub in fake_bin.iterdir():
-                stub.chmod(0o755)
+        else:
+            # Clean-host stubs: all evidence probes return nothing.
+            (fake_bin / "systemctl").write_text("#!/bin/sh\nexit 1\n")
+            (fake_bin / "ip").write_text("#!/bin/sh\nexit 1\n")
+            (fake_bin / "iptables").write_text("#!/bin/sh\nexit 1\n")
+            (fake_bin / "ip6tables").write_text("#!/bin/sh\nexit 1\n")
+        for stub in fake_bin.iterdir():
+            stub.chmod(0o755)
         env = os.environ.copy()
         env.update({
             "PATH": f"{fake_bin}:{env['PATH']}",
