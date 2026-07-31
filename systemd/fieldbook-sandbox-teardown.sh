@@ -42,20 +42,22 @@ old_ip_forward=$(state_value old_ip_forward); changed_ip_forward=$(state_value c
 # A mismatch aborts without even removing a jump or NAT rule.
 iptables_chain() { "$IPTABLES" -S "$1" 2>/dev/null; }
 ip6_chain() { "$IP6TABLES" -S "$1" 2>/dev/null; }
-# Normalize an iptables -S rule line for comparison. Handles three iptables
-# normalization differences that break exact string matching:
-#   1. /32 suffix on single IPs (192.168.10.252/32 vs 192.168.10.252)
-#   2. -m tcp insertion (-p tcp -m tcp --dport vs -p tcp --dport)
-#   3. token reordering (iptables normalizes its own canonical order)
-# After normalization, tokens are sorted and /32/-m tcp stripped so two
-# semantically identical rules compare equal regardless of rendering.
+# Normalize known iptables rendering variants WITHOUT losing option/value
+# association. Handles three differences that break exact matching:
+#   1. -m tcp/-m udp insertion (-p tcp -m tcp --dport vs -p tcp --dport)
+#   2. /32 suffix on IPv4 host addresses (192.168.10.252/32 vs 192.168.10.252)
+#   3. Token reordering (iptables emits its own canonical order)
+#
+# Unlike naive token sorting, this preserves option/value pairs by
+# normalizing -m tcp removal and /32 stripping IN PLACE, then sorting
+# the resulting whitespace-delimited option groups (each -opt value pair
+# stays together as a unit) rather than individual tokens.
 normalize_iptables_rule() {
-  sed -e 's#/32##g' \
-      -e 's/-m tcp //g' \
+  sed -e 's/-m tcp //g' \
       -e 's/-m udp //g' \
+      -e 's#\([0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)/32#\1#g' \
       -e 's/  */ /g' \
-    | tr ' ' '\n' \
-    | grep -v '^$' \
+    | grep -oE '\-[^ ]+[ ]+[^- ][^ ]*|\-[^ ]+' \
     | sort \
     | tr '\n' ' ' \
     | sed -e 's/^ //' -e 's/ $//'
