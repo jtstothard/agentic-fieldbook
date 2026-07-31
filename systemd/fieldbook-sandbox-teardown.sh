@@ -65,7 +65,7 @@ require_line() {
   local haystack="$1" needle="$2"
   # Normalize both sides so iptables rendering differences don't break the check.
   local norm_haystack norm_needle
-  norm_haystack=$(printf '%s\n' "$haystack" | while IFS= read -r line; do echo "$line" | normalize_iptables_rule; done)
+  norm_haystack=$(printf '%s\n' "$haystack" | while IFS= read -r line; do printf '%s\n' "$(printf '%s' "$line" | normalize_iptables_rule)"; done)
   norm_needle=$(printf '%s' "$needle" | normalize_iptables_rule)
   grep -Fqx -- "$norm_needle" <<<"$norm_haystack"
 }
