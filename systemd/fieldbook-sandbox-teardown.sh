@@ -42,7 +42,33 @@ old_ip_forward=$(state_value old_ip_forward); changed_ip_forward=$(state_value c
 # A mismatch aborts without even removing a jump or NAT rule.
 iptables_chain() { "$IPTABLES" -S "$1" 2>/dev/null; }
 ip6_chain() { "$IP6TABLES" -S "$1" 2>/dev/null; }
-require_line() { grep -Fqx -- "$2" <<<"$1"; }
+# Normalize an iptables -S rule line for comparison. Handles three iptables
+# normalization differences that break exact string matching:
+#   1. /32 suffix on single IPs (192.168.10.252/32 vs 192.168.10.252)
+#   2. -m tcp insertion (-p tcp -m tcp --dport vs -p tcp --dport)
+#   3. token reordering (iptables normalizes its own canonical order)
+# After normalization, tokens are sorted and /32/-m tcp stripped so two
+# semantically identical rules compare equal regardless of rendering.
+normalize_iptables_rule() {
+  sed -e 's#/32##g' \
+      -e 's/-m tcp //g' \
+      -e 's/-m udp //g' \
+      -e 's/  */ /g' \
+    | tr ' ' '\n' \
+    | grep -v '^$' \
+    | sort \
+    | tr '\n' ' ' \
+    | sed -e 's/^ //' -e 's/ $//'
+}
+
+require_line() {
+  local haystack="$1" needle="$2"
+  # Normalize both sides so iptables rendering differences don't break the check.
+  local norm_haystack norm_needle
+  norm_haystack=$(printf '%s\n' "$haystack" | while IFS= read -r line; do echo "$line" | normalize_iptables_rule; done)
+  norm_needle=$(printf '%s' "$needle" | normalize_iptables_rule)
+  grep -Fqx -- "$norm_needle" <<<"$norm_haystack"
+}
 exactly_one() { [[ "$(grep -Fxc -- "$2" <<<"$1")" == 1 ]]; }
 exactly_one_jump_at_one() {
   local table=$1 chain=$2 rule=$3
