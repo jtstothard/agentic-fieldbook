@@ -53,11 +53,14 @@ ip6_chain() { "$IP6TABLES" -S "$1" 2>/dev/null; }
 # the resulting whitespace-delimited option groups (each -opt value pair
 # stays together as a unit) rather than individual tokens.
 normalize_iptables_rule() {
-  sed -e 's/-m tcp //g' \
+  sed -e 's/! -/!-/g' \
+      -e 's/-m tcp //g' \
+      -e 's/-m tcp$//g' \
       -e 's/-m udp //g' \
+      -e 's/-m udp$//g' \
       -e 's#\([0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)/32#\1#g' \
       -e 's/  */ /g' \
-    | grep -oE '\-[^ ]+[ ]+[^- ][^ ]*|\-[^ ]+' \
+    | grep -oE '!?-[^ ]+[ ]+[^!-][^ ]*|!?-[^ ]+' \
     | sort \
     | tr '\n' ' ' \
     | sed -e 's/^ //' -e 's/ $//'
