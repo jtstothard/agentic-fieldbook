@@ -194,6 +194,49 @@ def validate_light_gate_fields(
     return errors
 
 
+def render_gate_message(request: LightGateRequest) -> str:
+    """Render a ``LightGateRequest`` into a recommendation-first message string.
+
+    Canonical format (one line per field, recommendation leads, context second)::
+
+        Recommendation: <recommended_option>
+        Fork: <fork_description>
+        Trade-off: <trade_off>
+        Revert: <revert_path>
+
+    The recommendation always appears first so Jay can decide quickly without
+    reading context.  The fork (the situation) is second — the context that
+    the recommendation resolves.  The one material trade-off and the
+    revert/abort path follow.  Adapters render this string verbatim; the
+    renderer defines the shape, the adapter owns transport.
+
+    The request must be valid: ``recommended_option`` is enforced non-empty at
+    request creation by :func:`validate_light_gate_fields`, so this function
+    never receives a request without a recommendation.  An empty
+    ``recommended_option`` or any empty required field raises ``ValueError``
+    defensively.
+    """
+    required = {
+        "recommended_option": request.recommended_option,
+        "fork_description": request.fork_description,
+        "trade_off": request.trade_off,
+        "revert_path": request.revert_path,
+    }
+    missing = [name for name, value in required.items() if not value.strip()]
+    if missing:
+        raise ValueError(
+            "cannot render gate message with empty field(s): "
+            + ", ".join(missing)
+        )
+    lines = [
+        f"Recommendation: {request.recommended_option}",
+        f"Fork: {request.fork_description}",
+        f"Trade-off: {request.trade_off}",
+        f"Revert: {request.revert_path}",
+    ]
+    return "\n".join(lines)
+
+
 class LightGateAdapter(ABC):
     """Deployment-neutral light-gate seam.
 
