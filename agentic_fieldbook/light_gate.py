@@ -222,11 +222,32 @@ def render_gate_message(request: LightGateRequest) -> str:
         "trade_off": request.trade_off,
         "revert_path": request.revert_path,
     }
+    # Validate types first (defends against None or non-str adapter bugs).
+    for name, value in required.items():
+        if not isinstance(value, str):
+            raise ValueError(
+                f"cannot render gate message: field {name!r} must be str, "
+                f"got {type(value).__name__}"
+            )
+    # Empty fields are rejected (request creation should prevent this, but
+    # defend in depth).
     missing = [name for name, value in required.items() if not value.strip()]
     if missing:
         raise ValueError(
             "cannot render gate message with empty field(s): "
             + ", ".join(missing)
+        )
+    # Reject embedded newlines/carriage returns: a gate message is strictly
+    # one line per field.  Allowing embedded newlines would let a malicious or
+    # buggy caller inject fake labels (e.g. "\n[Recommendation] ...") and break
+    # the canonical one-line-per-field contract.  Reject is safer than sanitize
+    # for a gate message.
+    multiline = [name for name, value in required.items()
+                 if "\n" in value or "\r" in value]
+    if multiline:
+        raise ValueError(
+            "cannot render gate message: field(s) contain embedded newlines "
+            "(gate messages must be one line per field): " + ", ".join(multiline)
         )
     lines = [
         f"Recommendation: {request.recommended_option}",

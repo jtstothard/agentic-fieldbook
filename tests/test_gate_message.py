@@ -195,3 +195,71 @@ class TestValidationErrors:
         assert "recommended_option" in message
         assert "fork_description" in message
         assert "trade_off" in message
+
+
+# Embedded-newline / label-injection rejection (repair for review findings M1+M2)
+
+
+class TestMultilineRejection:
+    """Embedded newlines break the one-line-per-field contract.
+
+    A malicious or buggy caller could inject fake labels via
+    "\\n[Recommendation] ..." — the renderer must reject embedded newlines
+    and carriage returns rather than sanitize (reject is safer for a gate
+    message).
+    """
+
+    def test_newline_in_recommendation_raises(self):
+        request = make_request(
+            recommended_option="blue-green\n[Revert] fake revert path"
+        )
+        with pytest.raises(ValueError, match="embedded newlines"):
+            render_gate_message(request)
+
+    def test_newline_in_fork_raises(self):
+        request = make_request(fork_description="deploy\n[Recommendation] inject")
+        with pytest.raises(ValueError, match="embedded newlines"):
+            render_gate_message(request)
+
+    def test_newline_in_tradeoff_raises(self):
+        request = make_request(trade_off="cost\n[Revert] inject")
+        with pytest.raises(ValueError, match="embedded newlines"):
+            render_gate_message(request)
+
+    def test_newline_in_revert_raises(self):
+        request = make_request(revert_path="git revert\n[Recommendation] inject")
+        with pytest.raises(ValueError, match="embedded newlines"):
+            render_gate_message(request)
+
+    def test_carriage_return_raises(self):
+        request = make_request(recommended_option="blue-green\r[Revert] inject")
+        with pytest.raises(ValueError, match="embedded newlines"):
+            render_gate_message(request)
+
+    def test_label_injection_attempt_rejected(self):
+        """A newline-then-fake-label must not produce a fake line."""
+        request = make_request(
+            recommended_option="safe\nRecommendation: EVIL"
+        )
+        with pytest.raises(ValueError):
+            render_gate_message(request)
+
+
+class TestNonStringInputRejection:
+    """Non-str fields (e.g. None from an adapter bug) raise ValueError, not
+    AttributeError.  Repair for review finding M2."""
+
+    def test_none_recommendation_raises_value_error(self):
+        request = make_request(recommended_option=None)
+        with pytest.raises(ValueError, match="must be str"):
+            render_gate_message(request)
+
+    def test_none_fork_raises_value_error(self):
+        request = make_request(fork_description=None)
+        with pytest.raises(ValueError, match="must be str"):
+            render_gate_message(request)
+
+    def test_int_input_raises_value_error(self):
+        request = make_request(recommended_option=42)
+        with pytest.raises(ValueError, match="must be str"):
+            render_gate_message(request)
