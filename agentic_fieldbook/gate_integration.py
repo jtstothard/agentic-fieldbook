@@ -176,6 +176,18 @@ class GateLifecycleCoordinator:
             idempotency_key=light_gate_inputs.idempotency_key,
         )
 
+        # Fail-closed: only block on a genuinely PENDING request.  A terminal
+        # outcome (IDEMPOTENCY_CONFLICT, EXPIRED, etc.) means the gate can
+        # never resolve — blocking would create a livelock trap.  Raise so the
+        # caller can handle the conflict (retry with a new key, surface the
+        # error, etc.) rather than silently stranding the record.
+        if request.outcome is not LightGateOutcome.PENDING:
+            raise ValueError(
+                f"cannot block on non-pending light-gate request "
+                f"(outcome={request.outcome.value}, gate_id={request.gate_id!r}); "
+                f"resolve the conflict before retrying"
+            )
+
         record.transition(
             LifecycleState.BLOCKED,
             actor=actor,

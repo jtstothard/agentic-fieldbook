@@ -479,3 +479,41 @@ class TestGateLightMultipleMarkers:
         assert result.action is GateRouteAction.BLOCKED_FOR_LIGHT_GATE
         assert marker in result.rules
         assert record.state is LifecycleState.BLOCKED
+
+
+class TestNonPendingGateOutcomeRejected:
+    """A non-PENDING gate request (IDEMPOTENCY_CONFLICT, EXPIRED, etc.) must
+    not block the record — that would create a livelock trap (blocked on a
+    gate that can never resolve).
+
+    Repair for R2 finding: attempt_transition must check request.outcome is
+    PENDING before blocking.
+    """
+
+    def test_idempotency_conflict_does_not_block(self):
+        """Same idempotency key + different fork must raise, not strand the
+        record in BLOCKED on an unresolvable conflict."""
+        adapter = ObservableAdapter()
+        coord = GateLifecycleCoordinator(light_gate_adapter=adapter)
+
+        # First request succeeds normally.
+        record1 = _make_planned_record()
+        task1 = GateTask(risk_class="low", capabilities=("read",), spec_fork=True)
+        inputs1 = _light_gate_inputs(idempotency_key="dup-key")
+        result1 = coord.attempt_transition(record1, task1, actor="planner", light_gate_inputs=inputs1)
+        assert result1.action is GateRouteAction.BLOCKED_FOR_LIGHT_GATE
+        assert record1.state is LifecycleState.BLOCKED
+
+        # Second request with SAME key but different fork -> conflict.
+        record2 = _make_planned_record()
+        task2 = GateTask(risk_class="low", capabilities=("read",), reversal_asymmetry=True)
+        inputs2 = _light_gate_inputs(
+            idempotency_key="dup-key",
+            fork_description="different fork to change the signature",
+        )
+
+        with pytest.raises(ValueError, match="non-pending"):
+            coord.attempt_transition(record2, task2, actor="planner", light_gate_inputs=inputs2)
+
+        # Record must NOT be blocked — it stays in PLANNED.
+        assert record2.state is LifecycleState.PLANNED
