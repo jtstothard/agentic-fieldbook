@@ -263,3 +263,36 @@ class TestNonStringInputRejection:
         request = make_request(recommended_option=42)
         with pytest.raises(ValueError, match="must be str"):
             render_gate_message(request)
+
+
+class TestAllLineSeparatorsRejected:
+    """splitlines()-based check must reject ALL line separators, not just \\n/\\r.
+
+    Repair for R2 finding M3: the narrow \\n/\\r check missed \\v, \\f, \\x1c-\\x1e,
+    \\x85, \\u2028 (line sep), \\u2029 (paragraph sep).
+    """
+
+    def test_vertical_tab_raises(self):
+        request = make_request(recommended_option="safe\v[Revert] inject")
+        with pytest.raises(ValueError, match="embedded newlines"):
+            render_gate_message(request)
+
+    def test_form_feed_raises(self):
+        request = make_request(fork_description="deploy\f[Recommendation] inject")
+        with pytest.raises(ValueError, match="embedded newlines"):
+            render_gate_message(request)
+
+    def test_unicode_line_separator_raises(self):
+        request = make_request(trade_off="cost\u2028[Revert] inject")
+        with pytest.raises(ValueError, match="embedded newlines"):
+            render_gate_message(request)
+
+    def test_unicode_paragraph_separator_raises(self):
+        request = make_request(revert_path="git revert\u2029[Recommendation] inject")
+        with pytest.raises(ValueError, match="embedded newlines"):
+            render_gate_message(request)
+
+    def test_crlf_raises(self):
+        request = make_request(recommended_option="safe\r\n[Revert] inject")
+        with pytest.raises(ValueError, match="embedded newlines"):
+            render_gate_message(request)

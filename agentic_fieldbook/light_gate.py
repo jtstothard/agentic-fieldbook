@@ -237,13 +237,14 @@ def render_gate_message(request: LightGateRequest) -> str:
             "cannot render gate message with empty field(s): "
             + ", ".join(missing)
         )
-    # Reject embedded newlines/carriage returns: a gate message is strictly
-    # one line per field.  Allowing embedded newlines would let a malicious or
-    # buggy caller inject fake labels (e.g. "\n[Recommendation] ...") and break
-    # the canonical one-line-per-field contract.  Reject is safer than sanitize
-    # for a gate message.
+    # Reject any field that would span multiple lines.  A gate message is
+    # strictly one line per field — allowing embedded line breaks would let a
+    # malicious or buggy caller inject fake labels (e.g. "\n[Recommendation]").
+    # Use splitlines() to catch ALL line separators Python recognizes (\n, \r,
+    # \r\n, \v, \f, \x1c-\x1e, \x85, \u2028, \u2029), not just \n and \r.
+    # Reject is safer than sanitize for a gate message.
     multiline = [name for name, value in required.items()
-                 if "\n" in value or "\r" in value]
+                 if len(value.splitlines()) > 1]
     if multiline:
         raise ValueError(
             "cannot render gate message: field(s) contain embedded newlines "
