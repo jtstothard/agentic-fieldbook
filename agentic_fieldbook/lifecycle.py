@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 import re
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Protocol, runtime_checkable
 
 from .governance import (
     CapabilityMismatchError,
@@ -50,6 +50,68 @@ class InvalidTransitionError(LifecycleError):
 
 class MissingEvidenceError(LifecycleError):
     """Raised when verification lacks a required evidence item."""
+
+
+class TransitionPausedError(LifecycleError):
+    """Raised when a pre-transition hook pauses the transition.
+
+    Callers catch this to learn that a transition was deferred (for example,
+    a light-gate is awaiting a human decision).  The record's state is
+    unchanged; the transition may be retried once the pause condition clears.
+    """
+
+
+class TransitionAdvice(str, Enum):
+    """Advice returned by a pre-transition hook callback.
+
+    ``PROCEED``: allow the transition to continue (default when no hooks
+    are registered, or all registered hooks return ``PROCEED``).
+
+    ``PAUSE``: defer the transition without changing state.  The caller
+    receives a :class:`TransitionPausedError`; the transition may be
+    retried after the pause condition is resolved.
+
+    ``BLOCK``: veto the transition permanently for this attempt.  Raises
+    :class:`InvalidTransitionError` with the hook's reason.
+    """
+
+    PROCEED = "proceed"
+    PAUSE = "pause"
+    BLOCK = "block"
+
+
+@dataclass(frozen=True)
+class HookResult:
+    """Result returned by a pre-transition hook callback.
+
+    ``advice`` controls whether the transition proceeds, pauses, or blocks.
+    ``reason`` is an optional human-readable explanation surfaced in the
+    raised exception (for ``PAUSE``/``BLOCK``) or recorded in provenance
+    (for informational hooks that return ``PROCEED``).
+    """
+
+    advice: TransitionAdvice
+    reason: str = ""
+
+
+@runtime_checkable
+class TransitionHook(Protocol):
+    """Protocol for pre-transition hook callbacks.
+
+    Hooks fire before governance checks during :meth:`CanonicalTaskRecord.transition`.
+    They observe the attempted transition and may veto (``BLOCK``) or defer
+    it (``PAUSE``), but they do NOT replace transition logic.  A hook that
+    returns ``PROCEED`` is advisory only.
+    """
+
+    def __call__(
+        self,
+        record: "CanonicalTaskRecord",
+        source: LifecycleState,
+        target: LifecycleState,
+    ) -> HookResult:
+        """Inspect the attempted transition and return advice."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -173,6 +235,67 @@ _TERMINAL_STATES = frozenset({
 })
 
 
+# --------------------------------------------------------------------------- #
+# Module-level pre-transition hook registry
+# --------------------------------------------------------------------------- #
+#
+# Hooks registered here fire for ALL CanonicalTaskRecord instances during
+# transition(), before governance checks.  The registry is a list so hooks
+# fire in registration order.  A hook may also be registered directly on a
+# single record via :meth:`CanonicalTaskRecord.register_hook` for per-record
+# scoping (useful in tests and for record-specific observers).
+
+_global_transition_hooks: list[TransitionHook] = []
+
+
+def register_transition_hook(hook: TransitionHook) -> None:
+    """Register a global pre-transition hook.
+
+    The hook fires for every ``CanonicalTaskRecord.transition`` call, in
+    registration order, before governance checks.  Hooks are deduplicated
+    by identity (registering the same callable twice has no effect).
+    """
+    if not any(h is hook for h in _global_transition_hooks):
+        _global_transition_hooks.append(hook)
+
+
+def unregister_transition_hook(hook: TransitionHook) -> None:
+    """Remove a previously registered global hook.  No-op if not found."""
+    _global_transition_hooks[:] = [h for h in _global_transition_hooks if h is not hook]
+
+
+def _run_hooks(
+    record: "CanonicalTaskRecord",
+    source: LifecycleState,
+    target: LifecycleState,
+    local_hooks: list[TransitionHook],
+) -> HookResult:
+    """Run all registered hooks for a transition, returning aggregated advice.
+
+    Iterates global hooks followed by record-local hooks (in registration
+    order for each).  Returns the first non-PROCEED advice encountered
+    (BLOCK takes precedence over PAUSE).  If every hook returns PROCEED,
+    returns a PROCEED result with the combined reasons for traceability.
+
+    Exceptions raised inside a hook are NOT swallowed: they propagate to the
+    caller, aborting the transition.  A buggy hook should not silently pass.
+    """
+    proceed_reasons: list[str] = []
+    for hook in [*_global_transition_hooks, *local_hooks]:
+        result = hook(record, source, target)
+        if result.advice is TransitionAdvice.BLOCK:
+            return result
+        if result.advice is TransitionAdvice.PAUSE:
+            return result
+        # PROCEED — collect reason for provenance traceability
+        if result.reason:
+            proceed_reasons.append(result.reason)
+    return HookResult(
+        advice=TransitionAdvice.PROCEED,
+        reason="; ".join(proceed_reasons),
+    )
+
+
 def _state(value: LifecycleState | str) -> LifecycleState:
     try:
         return value if isinstance(value, LifecycleState) else LifecycleState(value)
@@ -212,6 +335,7 @@ class CanonicalTaskRecord:
     _recovery_attempt: int = field(default=0, init=False, repr=False)
     _approval_receipt_id: str | None = field(default=None, init=False, repr=False)
     _approval_contract_digest: str | None = field(default=None, init=False, repr=False)
+    _hooks: list[TransitionHook] = field(default_factory=list, init=False, repr=False)
 
     @classmethod
     def create(cls, contract: TaskContract, *, task_id: str) -> "CanonicalTaskRecord":
@@ -267,6 +391,20 @@ class CanonicalTaskRecord:
     def has_current_approval_binding(self) -> bool:
         return bool(self._approval_receipt_id and self._approval_contract_digest)
 
+    def register_hook(self, hook: TransitionHook) -> None:
+        """Register a pre-transition hook scoped to this record only.
+
+        Record-local hooks fire after global hooks (registered via
+        :func:`register_transition_hook`) during :meth:`transition`.
+        Deduplicated by identity.
+        """
+        if not any(h is hook for h in self._hooks):
+            self._hooks.append(hook)
+
+    def unregister_hook(self, hook: TransitionHook) -> None:
+        """Remove a record-local hook.  No-op if not found."""
+        self._hooks[:] = [h for h in self._hooks if h is not hook]
+
     def transition(
         self,
         target: LifecycleState | str,
@@ -292,6 +430,19 @@ class CanonicalTaskRecord:
 
         if not valid:
             raise InvalidTransitionError(f"cannot transition from {self._state.value} to {target_state.value}")
+
+        # Pre-transition hooks: fire before governance checks.  Hooks observe
+        # the attempted transition and may pause (defer) or block (veto) it.
+        # State is unchanged when PAUSE or BLOCK fires.
+        hook_advice = _run_hooks(self, self._state, target_state, self._hooks)
+        if hook_advice.advice is TransitionAdvice.BLOCK:
+            raise InvalidTransitionError(
+                hook_advice.reason or "transition blocked by pre-transition hook"
+            )
+        if hook_advice.advice is TransitionAdvice.PAUSE:
+            raise TransitionPausedError(
+                hook_advice.reason or "transition paused by pre-transition hook"
+            )
 
         # Governance checks
         previous_actor = self._history[-1]["actor"] if self._history else None
@@ -503,9 +654,15 @@ class CanonicalTaskRecord:
 __all__ = [
     "CanonicalTaskRecord",
     "Evidence",
+    "HookResult",
     "InvalidTransitionError",
     "LifecycleError",
     "LifecycleState",
     "MissingEvidenceError",
     "TaskContract",
+    "TransitionAdvice",
+    "TransitionHook",
+    "TransitionPausedError",
+    "register_transition_hook",
+    "unregister_transition_hook",
 ]
