@@ -26,7 +26,7 @@ testable in isolation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from .gate_evaluator import (
@@ -251,7 +251,7 @@ class GateSubscriber:
         # Default expiry: 5 minutes from now (UTC, ISO-8601 with Z).
         # The surface router's create_request validates the timestamp.
         expires_at = (
-            datetime.now(timezone.utc)
+            (datetime.now(timezone.utc) + timedelta(minutes=5))
             .replace(microsecond=0)
             .strftime("%Y-%m-%dT%H:%M:%SZ")
         )
