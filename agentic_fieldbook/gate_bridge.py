@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
+logger = logging.getLogger(__name__)
+
 from .gate_evaluator import GateDisposition, GateLearningStore, GateTask, evaluate_gate
 from .governance import detect_always_ask_capabilities
 from .light_gate import LightGateDecision
@@ -308,7 +310,8 @@ class FieldbookGateBridge:
                                     contract_digest=digest)
             return BridgeResult(BridgeStatus.FALLBACK, task_id, outcome=value,
                                 degradation_code="gate_malformed", contract_digest=digest)
-        except Exception:
+        except Exception as exc:
+            logger.warning("hitl gate reply failed to resolve: %s", exc, exc_info=True)
             return None
 
 
