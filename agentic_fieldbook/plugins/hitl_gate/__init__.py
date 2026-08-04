@@ -52,8 +52,28 @@ def _config_from_context(ctx: Any) -> Any:
 
 
 def _bridge_from_context(ctx: Any) -> Any:
+    """Get an injected bridge or lazily attach the live gateway bridge.
+
+    Every construction failure is an availability failure, never a host-hook
+    failure.  Successful construction is cached on the gateway context so the
+    SQLite store and gate adapter are stable for the process lifetime.
+    """
     try:
-        return getattr(ctx, "hitl_gate_bridge", getattr(ctx, "bridge", None))
+        bridge = getattr(ctx, "hitl_gate_bridge", None)
+        if bridge is not None:
+            return bridge
+        bridge = getattr(ctx, "bridge", None)
+        if bridge is not None:
+            return bridge
+        from .live_bridge import build_live_bridge
+        bridge = build_live_bridge(ctx)
+        try:
+            setattr(ctx, "hitl_gate_bridge", bridge)
+        except Exception:
+            # Some host contexts are immutable.  The constructed bridge is
+            # still valid for this hook invocation; a later call may rebuild.
+            pass
+        return bridge
     except Exception:
         return None
 

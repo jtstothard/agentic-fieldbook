@@ -5,12 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
-from agentic_fieldbook.gate_bridge import BridgeResult, BridgeStatus
+from agentic_fieldbook.gate_bridge import BridgeResult, BridgeStatus, RouterTask
 from agentic_fieldbook.plugins.hitl_gate.detector import (
     build_router_task,
     detect_destructive,
 )
-from agentic_fieldbook.plugins.hitl_gate import _on_pre_tool_call, register
+from agentic_fieldbook.plugins.hitl_gate import _bridge_from_context, _on_pre_tool_call, register
 
 
 @pytest.mark.parametrize(
@@ -225,3 +225,93 @@ def test_register_fail_open_on_malformed_context():
             raise RuntimeError("broken host integration")
 
     register(BrokenContext())
+
+
+# --- Live bridge wiring (#91) ---
+
+
+def test_bridge_from_context_constructs_and_caches_live_matrix_bridge(monkeypatch, tmp_path):
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sent = []
+
+    class LiveMatrix:
+        async def send(self, room_id, content):
+            sent.append((room_id, content))
+            return SimpleNamespace(success=True, message_id="$matrix-event")
+
+    context = SimpleNamespace(adapters={"matrix": LiveMatrix()})
+    bridge = _bridge_from_context(context)
+
+    assert bridge is context.hitl_gate_bridge
+    assert bridge.enabled is True
+    assert bridge.destructive_allowlist == frozenset(("rm-rf", "drop", "truncate", "destroy"))
+    assert bridge.gate_adapter._room == "!home:example"
+    match = detect_destructive("terminal", {"command": "rm -rf /tmp/x"})
+    assert match is not None
+    result = bridge.evaluate_and_maybe_gate(build_router_task(match, task_id="call-1"))
+    assert result.status is BridgeStatus.PENDING
+    assert sent and sent[0][0] == "!home:example"
+    assert _bridge_from_context(context) is bridge
+
+
+def test_bridge_from_context_prefers_gate_room_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example")
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    context = SimpleNamespace(adapters={"matrix": object()})
+    bridge = _bridge_from_context(context)
+    assert bridge.gate_adapter._room == "!gate:example"
+
+
+@pytest.mark.parametrize("context", [
+    SimpleNamespace(adapters={}),
+    SimpleNamespace(),
+])
+def test_bridge_from_context_fails_open_without_live_matrix(monkeypatch, context):
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example")
+    assert _bridge_from_context(context) is None
+
+
+def test_registered_hook_routes_destructive_call_to_live_gate(monkeypatch, tmp_path):
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    callbacks = {}
+
+    class LiveMatrix:
+        async def send(self, _room_id, _content):
+            return SimpleNamespace(success=True, message_id="$matrix-event")
+
+    context = SimpleNamespace(adapters={"matrix": LiveMatrix()},
+                              register_hook=lambda name, callback: callbacks.update({name: callback}))
+    register(context)
+    directive = callbacks["pre_tool_call"]("terminal", {"command": "DROP TABLE users"}, task_id="call-1")
+    assert directive is not None
+    assert directive["action"] == "approve"
+
+
+def test_registered_hook_fails_open_to_passthrough_without_live_matrix(monkeypatch):
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example")
+    callbacks = {}
+    context = SimpleNamespace(adapters={},
+                              register_hook=lambda name, callback: callbacks.update({name: callback}))
+    register(context)
+    assert callbacks["pre_tool_call"]("terminal", {"command": "rm -rf /tmp/x"}, task_id="call-1") is None
+
+
+def test_live_bridge_routes_non_destructive_always_ask_to_telegram(monkeypatch, tmp_path):
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    fallback = []
+    context = SimpleNamespace(adapters={"matrix": object()}, telegram_fallback=fallback.append)
+    bridge = _bridge_from_context(context)
+    task = RouterTask.from_mapping({
+        "task_id": "secret-1", "objective": "rotate API key", "scope": ("key:example",),
+        "exclusions": (), "risk_class": "high", "capabilities": ("secret-rotate",),
+        "action_class": "secret-rotate",
+    })
+    result = bridge.evaluate_and_maybe_gate(task)
+    assert result.status is BridgeStatus.FALLBACK
+    assert fallback == [task]
