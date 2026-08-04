@@ -7,9 +7,43 @@ This test asserts that layout so a future refactor does not silently break
 remote installation again.
 """
 
+import importlib.metadata
+import runpy
+import sys
 from pathlib import Path
+from types import ModuleType
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+class TestPackageEntryPoints:
+    """The setup configuration must expose both independently loadable plugins."""
+
+    def test_setup_declares_discoverable_fieldbook_and_hitl_gate_plugins(self, monkeypatch):
+        captured = {}
+        setuptools = ModuleType("setuptools")
+        setattr(setuptools, "find_packages", lambda: [])
+        setattr(setuptools, "setup", lambda **kwargs: captured.update(kwargs))
+        monkeypatch.setitem(sys.modules, "setuptools", setuptools)
+
+        runpy.run_path(str(REPO_ROOT / "setup.py"))
+
+        entry_points = {
+            entry_point.name: entry_point
+            for entry_point in (
+                importlib.metadata.EntryPoint(name, value, "hermes_agent.plugins")
+                for name, value in (
+                    item.split(" = ", maxsplit=1)
+                    for item in captured["entry_points"]["hermes_agent.plugins"]
+                )
+            )
+        }
+
+        assert set(entry_points) == {"agentic-fieldbook", "hitl-gate"}
+        assert entry_points["agentic-fieldbook"].value == "agentic_fieldbook.plugin"
+        assert entry_points["hitl-gate"].value == "agentic_fieldbook.plugins.hitl_gate"
+        assert callable(entry_points["agentic-fieldbook"].load().register)
+        assert callable(entry_points["hitl-gate"].load().register)
 
 
 class TestInstalledRootLayout:
