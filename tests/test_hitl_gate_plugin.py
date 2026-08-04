@@ -527,3 +527,147 @@ def test_round_trip_unknown_gate_id(_round_trip):
     # The MALFORMED outcome is not in the mapped set, so the bridge returns None
     # rather than FALLBACK. This is safe: no resolution, no crash, no false gate.
     assert reply is None
+
+
+# ---------------------------------------------------------------------------
+# Live-bridge adapter resolution regression tests.
+#
+# PluginContext (the ctx passed to register()) does NOT expose .adapters.
+# The bridge must fall back to the module-global weakref
+# gateway.run._gateway_runner_ref — the same path send_message_tool uses.
+# These guard against regressions in that resolution path.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_adapters_prefers_direct_context_attr():
+    """context.adapters wins when present (test-injected or future Hermes surface)."""
+    from agentic_fieldbook.plugins.hitl_gate.live_bridge import _resolve_adapters
+
+    sentinel = {"matrix": object()}
+    ctx = SimpleNamespace(adapters=sentinel)
+    assert _resolve_adapters(ctx) is sentinel
+
+
+def test_resolve_adapters_falls_back_to_gateway_runner_ref(monkeypatch):
+    """When context.adapters is absent, resolve via _gateway_runner_ref()."""
+    from agentic_fieldbook.plugins.hitl_gate import live_bridge as lb_mod
+
+    fake_adapters = {"matrix": object()}
+    fake_runner = SimpleNamespace(adapters=fake_adapters)
+
+    # The global lives in gateway.run; patch the weakref callable.
+    import sys
+    fake_gateway_run = SimpleNamespace(_gateway_runner_ref=lambda: fake_runner)
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+    ctx = SimpleNamespace()  # no .adapters attribute
+    result = _resolve_adapters_of(lb_mod, ctx)
+    assert result is fake_adapters
+
+
+def _resolve_adapters_of(lb_mod, ctx):
+    """Call _resolve_adapters from the module under test."""
+    return lb_mod._resolve_adapters(ctx)
+
+
+def test_resolve_adapters_returns_none_when_neither_path_available(monkeypatch):
+    """No context.adapters AND no gateway runner → None (fail-open contract)."""
+    from agentic_fieldbook.plugins.hitl_gate import live_bridge as lb_mod
+    import sys
+
+    # gateway.run absent or _gateway_runner_ref returns None
+    fake_gateway_run = SimpleNamespace(_gateway_runner_ref=lambda: None)
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+    ctx = SimpleNamespace()
+    assert lb_mod._resolve_adapters(ctx) is None
+
+
+def test_resolve_adapters_returns_none_when_gateway_import_fails(monkeypatch):
+    """ImportError on gateway.run → None (fail-open contract)."""
+    from agentic_fieldbook.plugins.hitl_gate import live_bridge as lb_mod
+
+    # Make the lazy import inside _resolve_adapters fail
+    import builtins
+    real_import = builtins.__import__
+
+    def blocking_import(name, *args, **kwargs):
+        if name == "gateway.run":
+            raise ImportError("simulated missing module")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocking_import)
+    ctx = SimpleNamespace()
+    assert lb_mod._resolve_adapters(ctx) is None
+
+
+def test_build_live_bridge_uses_gateway_runner_ref(monkeypatch, tmp_path):
+    """build_live_bridge succeeds when only the gateway runner ref is available,
+    not a direct context.adapters attribute. This is the real production path."""
+    from agentic_fieldbook.plugins.hitl_gate import live_bridge as lb_mod
+    import sys
+
+    # Build a fake adapter that the transport wrapper will use
+    class _FakeAdapter:
+        async def send(self, room_id, content):
+            class R:
+                success = True
+                message_id = "$fake:1"
+            return R()
+
+    fake_adapters = {"matrix": _FakeAdapter()}
+    fake_runner = SimpleNamespace(adapters=fake_adapters)
+    fake_gateway_run = SimpleNamespace(_gateway_runner_ref=lambda: fake_runner)
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # context has NO .adapters — simulates real PluginContext
+    ctx = SimpleNamespace()
+    bridge = lb_mod.build_live_bridge(ctx)
+    assert bridge is not None
+    assert bridge.enabled is True
+
+
+def test_hook_fires_approve_via_gateway_runner_ref(monkeypatch, tmp_path):
+    """End-to-end: the pre_tool_call hook returns an 'approve' directive when
+    the bridge is built through the gateway runner ref path (no context.adapters).
+
+    This is the regression test for the original production bug: the hook
+    returned None (fail-open) because PluginContext had no .adapters, so the
+    bridge was None and destructive commands passed through ungated."""
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # Stand up a fake gateway runner with a Matrix adapter
+    import sys
+
+    class _FakeAdapter:
+        async def send(self, room_id, content):
+            class R:
+                success = True
+                message_id = "$fake:e2e"
+            return R()
+
+    fake_adapters = {"matrix": _FakeAdapter()}
+    fake_runner = SimpleNamespace(adapters=fake_adapters)
+    fake_gateway_run = SimpleNamespace(_gateway_runner_ref=lambda: fake_runner)
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+    # Register the plugin with a context that has NO .adapters (like PluginContext)
+    callbacks = {}
+    context = SimpleNamespace(
+        register_hook=lambda name, callback: callbacks.update({name: callback})
+    )
+    register(context)
+
+    # Fire the hook on a destructive command
+    result = callbacks["pre_tool_call"](
+        "terminal", {"command": "rm -rf /tmp/e2e-test"}, task_id="e2e-1"
+    )
+    assert result is not None
+    assert result["action"] == "approve"
+    assert isinstance(result["message"], str)
+    assert result["message"]

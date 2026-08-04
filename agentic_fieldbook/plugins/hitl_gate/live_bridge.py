@@ -69,6 +69,30 @@ class _SynchronousMatrixTransport:
         return ()
 
 
+def _resolve_adapters(context: Any) -> Any:
+    """Resolve the gateway adapter registry from the plugin context.
+
+    Hermes' ``PluginContext`` does not expose ``.adapters`` directly — it wraps
+    a ``PluginManager``, not the ``GatewayRunner``.  The canonical path (used by
+    ``send_message_tool``) is the module-global weakref
+    ``gateway.run._gateway_runner_ref``, set in ``GatewayRunner.__init__``.
+
+    A direct ``context.adapters`` attribute (injected by tests or by a future
+    Hermes change that widens the plugin surface) still wins, preserving the
+    original contract.
+    """
+    adapters = getattr(context, "adapters", None)
+    if adapters is not None:
+        return adapters
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    return getattr(runner, "adapters", None)
+
+
 def build_live_bridge(context: Any) -> Any:
     """Build the production bridge from a running gateway context.
 
@@ -82,7 +106,7 @@ def build_live_bridge(context: Any) -> Any:
     room_id = os.environ.get("MATRIX_GATE_ROOM") or os.environ.get("MATRIX_HOME_ROOM")
     if not room_id:
         raise ValueError("MATRIX_HOME_ROOM or MATRIX_GATE_ROOM is required")
-    adapters = getattr(context, "adapters")
+    adapters = _resolve_adapters(context)
     transport = transport_from_gateway(adapters, room_id)
     gate_adapter = MatrixGateAdapter(_SynchronousMatrixTransport(transport), room_id)
     return FieldbookGateBridge(
