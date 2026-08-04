@@ -34,6 +34,7 @@ setup(
     entry_points={
         "hermes_agent.plugins": [
             "agentic-fieldbook = agentic_fieldbook.plugin",
+            "hitl-gate = agentic_fieldbook.plugins.hitl_gate",
         ],
     },
 )

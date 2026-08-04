@@ -7,9 +7,132 @@ This test asserts that layout so a future refactor does not silently break
 remote installation again.
 """
 
+import importlib.metadata
+import subprocess
+import sys
+import venv
 from pathlib import Path
+from types import ModuleType
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+class TestPackageEntryPoints:
+    """The setup configuration must expose both independently loadable plugins."""
+
+    def test_setup_declares_discoverable_fieldbook_and_hitl_gate_plugins(self, monkeypatch):
+        captured = {}
+        setuptools = ModuleType("setuptools")
+        setattr(setuptools, "find_packages", lambda: [])
+        setattr(setuptools, "setup", lambda **kwargs: captured.update(kwargs))
+        monkeypatch.setitem(sys.modules, "setuptools", setuptools)
+
+        runpy = __import__("runpy")
+        runpy.run_path(str(REPO_ROOT / "setup.py"))
+
+        entry_points = {
+            entry_point.name: entry_point
+            for entry_point in (
+                importlib.metadata.EntryPoint(name, value, "hermes_agent.plugins")
+                for name, value in (
+                    item.split(" = ", maxsplit=1)
+                    for item in captured["entry_points"]["hermes_agent.plugins"]
+                )
+            )
+        }
+
+        assert set(entry_points) == {"agentic-fieldbook", "hitl-gate"}
+        assert entry_points["agentic-fieldbook"].value == "agentic_fieldbook.plugin"
+        assert entry_points["hitl-gate"].value == "agentic_fieldbook.plugins.hitl_gate"
+        assert callable(entry_points["agentic-fieldbook"].load().register)
+        assert callable(entry_points["hitl-gate"].load().register)
+
+    def test_built_distribution_exposes_entry_points_via_metadata(self, tmp_path):
+        """Real discovery-path test: build the package and verify entry_points metadata.
+
+        This test exercises the full packaging pipeline by:
+        1. Building a wheel into a temporary directory
+        2. Installing the wheel into an isolated virtual environment
+        3. Querying the real importlib.metadata.entry_points() to confirm both
+           'agentic-fieldbook' and 'hitl-gate' are discoverable
+
+        This regression test would catch issues where the source setup.py declares
+        entry points but the built/installed distribution does not expose them
+        correctly (e.g. missing metadata files, incorrect packaging).
+        """
+        # Build a wheel into a temporary location
+        wheel_dir = tmp_path / "wheel"
+        wheel_dir.mkdir()
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "-w", str(wheel_dir)],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Find the built wheel
+        wheels = list(wheel_dir.glob("*.whl"))
+        assert len(wheels) == 1, f"Expected exactly one wheel, found {len(wheels)}"
+        wheel_path = wheels[0]
+
+        # Create an isolated virtual environment
+        venv_path = tmp_path / "venv"
+        venv.create(venv_path, with_pip=True)
+
+        # Determine the python executable in the venv
+        if sys.platform == "win32":
+            python_exe = str(venv_path / "Scripts" / "python.exe")
+        else:
+            python_exe = str(venv_path / "bin" / "python")
+
+        # Install the built wheel into the isolated venv
+        subprocess.run(
+            [python_exe, "-m", "pip", "install", str(wheel_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Query entry_points from the built/installed distribution
+        # Use the venv's python to import and inspect the package
+        inspect_code = """
+import importlib.metadata
+
+# Get all entry points for the hermes_agent.plugins group
+entry_points_dict = importlib.metadata.entry_points(group="hermes_agent.plugins")
+
+# Convert to a dict by name for easier assertion
+# Python 3.8-3.9: .entry_points() returns EntryPoints object (sequence-like)
+# Python 3.10+: .entry_points() returns a dict
+if isinstance(entry_points_dict, dict):
+    eps_by_name = {ep.name: ep for ep in entry_points_dict.values()}
+else:
+    eps_by_name = {ep.name: ep for ep in entry_points_dict}
+
+# Check both plugins are present
+assert 'agentic-fieldbook' in eps_by_name, f"Missing 'agentic-fieldbook' entry point. Found: {list(eps_by_name.keys())}"
+assert 'hitl-gate' in eps_by_name, f"Missing 'hitl-gate' entry point. Found: {list(eps_by_name.keys())}"
+
+# Verify the entry point values point to the correct modules
+assert eps_by_name['agentic-fieldbook'].value == 'agentic_fieldbook.plugin'
+assert eps_by_name['hitl-gate'].value == 'agentic_fieldbook.plugins.hitl_gate'
+
+print("SUCCESS")
+"""
+
+        result = subprocess.run(
+            [python_exe, "-c", inspect_code],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        assert "SUCCESS" in result.stdout, (
+            f"Entry point discovery failed in built distribution.\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
 
 
 class TestInstalledRootLayout:
