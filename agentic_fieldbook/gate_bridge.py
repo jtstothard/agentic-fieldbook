@@ -14,8 +14,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
+logger = logging.getLogger(__name__)
+
 from .gate_evaluator import GateDisposition, GateLearningStore, GateTask, evaluate_gate
 from .governance import detect_always_ask_capabilities
+from .light_gate import LightGateDecision
 from .receipt import canonical_digest
 
 _LOG = logging.getLogger(__name__)
@@ -233,9 +236,57 @@ class FieldbookGateBridge:
         except Exception as exc:
             return self._fallback(task, "gate_bridge_unavailable", exc)
 
+    def _unpack_reply(self, message: Any) -> tuple[str, str]:
+        """Unpack an inbound Matrix event/message into (raw_text, subject_ref).
+
+        Handles three shapes:
+        1. Raw string (text event) — use string as raw_text, derive subject_ref.
+        2. Object/dict with .text/["text"] and .sender/["sender"] (structured event).
+        3. LightGateDecision object (already resolved by adapter).
+
+        Returns:
+            (raw_text, subject_ref) tuple.
+
+        Raises:
+            ValueError: If message shape is unrecognizable.
+        """
+        # Case 1: Already-resolved decision (external routing)
+        if isinstance(message, LightGateDecision):
+            # For already-resolved decisions, we need to reconstruct raw_text
+            # This is a fallback path; prefer passing the original message.
+            raise ValueError("LightGateDecision passed to _unpack_reply; use original message")
+
+        # Case 2: Raw string (most common from Matrix text event)
+        if isinstance(message, str):
+            raw_text = message
+            # Derive subject_ref from context if available, otherwise default
+            # The bridge doesn't have access to Matrix sender context for raw strings
+            subject_ref = "matrix:user"
+            return raw_text, subject_ref
+
+        # Case 3: Structured object with text and sender attributes
+        # Try object attributes first
+        text = getattr(message, "text", None)
+        sender = getattr(message, "sender", None)
+
+        # Fall back to dict access
+        if text is None and isinstance(message, dict):
+            text = message.get("text")
+            sender = message.get("sender")
+
+        if text is not None:
+            if not isinstance(text, str):
+                raise ValueError(f"Message text must be string, got {type(text).__name__}")
+            raw_text = text
+            subject_ref = sender if isinstance(sender, str) and sender.strip() else "matrix:user"
+            return raw_text, subject_ref
+
+        raise ValueError(f"Unrecognized message shape: {type(message).__name__}")
+
     def process_reply(self, message: Any) -> BridgeResult | None:
         try:
-            result = self.gate_adapter.process_reply(message)
+            raw_text, subject_ref = self._unpack_reply(message)
+            result = self.gate_adapter.process_reply(raw_text, subject_ref)
             if result is None:
                 return None
             outcome = getattr(result, "outcome", result)
@@ -259,7 +310,8 @@ class FieldbookGateBridge:
                                     contract_digest=digest)
             return BridgeResult(BridgeStatus.FALLBACK, task_id, outcome=value,
                                 degradation_code="gate_malformed", contract_digest=digest)
-        except Exception:
+        except Exception as exc:
+            logger.warning("hitl gate reply failed to resolve: %s", exc, exc_info=True)
             return None
 
 
