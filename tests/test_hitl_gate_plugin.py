@@ -315,3 +315,215 @@ def test_live_bridge_routes_non_destructive_always_ask_to_telegram(monkeypatch, 
     result = bridge.evaluate_and_maybe_gate(task)
     assert result.status is BridgeStatus.FALLBACK
     assert fallback == [task]
+
+
+# ---------------------------------------------------------------------------
+# Bridge inbound-reply round-trip regression tests.
+#
+# These exercise the REAL bridge → adapter → transport path (fake transport,
+# no live Matrix) to guard against the seam gap where bridge.process_reply(msg)
+# passed one arg to an adapter that expected two (raw_text, subject_ref),
+# silently swallowing the TypeError and leaving gates PENDING forever.
+# ---------------------------------------------------------------------------
+
+
+class _FakeReplyTransport:
+    """Records sends; optionally fails to simulate Matrix outage."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.sent: list[str] = []
+        self._fail = fail
+        self._counter = 0
+
+    def send(self, _room_id: str, message: str) -> str:
+        if self._fail:
+            raise ConnectionError("simulated matrix outage")
+        self._counter += 1
+        event_id = f"$fake-event-{self._counter}"
+        self.sent.append(message)
+        return event_id
+
+
+def _make_destructive_task(task_id: str = "rt-1") -> RouterTask:
+    return RouterTask(
+        task_id=task_id,
+        objective="delete /tmp/test",
+        scope=("/tmp/test",),
+        exclusions=(),
+        risk_class="destructive",
+        capabilities=("delete", "destroy"),
+        action_class="rm-rf",
+        fork_description="Delete /tmp/test dir",
+        recommended_option="proceed",
+        options=("proceed", "abort"),
+        trade_off="irreversible delete vs needed cleanup",
+        revert_path="restore from backup",
+        idempotency_key="key-" + task_id,
+        contract_digest="digest-" + task_id,
+    )
+
+
+def _build_round_trip_bridge(tmp_path, *, transport_fail: bool = False, enabled: bool = True):
+    """Build a real bridge/adapter/store with a fake transport."""
+    from datetime import timedelta
+
+    from agentic_fieldbook.gate_bridge import FieldbookGateBridge, SQLiteLearningStore
+    from agentic_fieldbook.matrix_gate_adapter import MatrixGateAdapter
+
+    store = SQLiteLearningStore(tmp_path / "hitl-roundtrip.sqlite")
+    transport = _FakeReplyTransport(fail=transport_fail)
+    fallback_calls: list = []
+    adapter = MatrixGateAdapter(
+        transport, "!room:test", validity_window=timedelta(seconds=300)
+    )
+    bridge = FieldbookGateBridge(
+        learning_store=store,
+        gate_adapter=adapter,
+        fallback=fallback_calls.append,
+        enabled=enabled,
+        destructive_allowlist=("rm-rf", "drop", "truncate", "destroy"),
+    )
+    return bridge, transport, fallback_calls, store, adapter
+
+
+@pytest.fixture
+def _round_trip(tmp_path):
+    bridge, transport, fallback, store, adapter = _build_round_trip_bridge(tmp_path)
+    return bridge, transport, fallback, store, adapter
+
+
+def test_round_trip_approve_raw_string(_round_trip):
+    """approve via /gate command as a raw string resolves to PROCEED."""
+    bridge, transport, _fallback, store, _adapter = _round_trip
+    task = _make_destructive_task("approve-rt")
+    result = bridge.evaluate_and_maybe_gate(task)
+    assert result.status is BridgeStatus.PENDING
+    assert len(transport.sent) == 1
+
+    reply = bridge.process_reply(f"/gate approve {result.gate_id}")
+    assert reply is not None
+    assert reply.status is BridgeStatus.PROCEED
+    assert reply.outcome == "approved"
+    # Resolution must be persisted.
+    assert store.check_known_preference(task.fork_description, threshold=1)
+
+
+def test_round_trip_reject_raw_string(_round_trip):
+    """reject via /gate command resolves to ABORT."""
+    bridge, _transport, _fallback, _store, _adapter = _round_trip
+    task = _make_destructive_task("reject-rt")
+    result = bridge.evaluate_and_maybe_gate(task)
+    assert result.status is BridgeStatus.PENDING
+
+    reply = bridge.process_reply(f"/gate reject {result.gate_id}")
+    assert reply is not None
+    assert reply.status is BridgeStatus.ABORT
+    assert reply.outcome == "rejected"
+
+
+def test_round_trip_expiry(_round_trip):
+    """an expired gate resolves to ABORT with outcome=expired."""
+    from datetime import datetime, timezone
+
+    bridge, _transport, _fallback, _store, adapter = _round_trip
+    task = _make_destructive_task("expire-rt")
+    result = bridge.evaluate_and_maybe_gate(task)
+    assert result.status is BridgeStatus.PENDING
+
+    # Force expiry by mutating the stored request's expires_at.
+    request = adapter._requests[result.gate_id]
+    object.__setattr__(request, "expires_at", "2000-01-01T00:00:00Z")
+
+    reply = bridge.process_reply(f"/gate approve {result.gate_id}")
+    assert reply is not None
+    assert reply.status is BridgeStatus.ABORT
+    assert reply.outcome == "expired"
+
+
+def test_round_trip_pick_option(_round_trip):
+    """pick of a valid non-recommended option resolves."""
+    bridge, _transport, _fallback, _store, _adapter = _round_trip
+    task = _make_destructive_task("pick-rt")
+    result = bridge.evaluate_and_maybe_gate(task)
+
+    reply = bridge.process_reply(f"/gate pick abort {result.gate_id}")
+    assert reply is not None
+    # 'abort' is a valid option → adapter records APPROVED, bridge maps to PROCEED
+    # (the option was valid, not the recommendation).
+    assert reply.outcome == "approved"
+
+
+def test_round_trip_structured_dict_message(_round_trip):
+    """a dict with text+sender is unpacked correctly."""
+    bridge, _transport, _fallback, _store, _adapter = _round_trip
+    task = _make_destructive_task("dict-rt")
+    result = bridge.evaluate_and_maybe_gate(task)
+
+    msg = {"text": f"/gate approve {result.gate_id}", "sender": "@jay:test"}
+    reply = bridge.process_reply(msg)
+    assert reply is not None
+    assert reply.status is BridgeStatus.PROCEED
+
+
+def test_round_trip_subject_ref_recorded(tmp_path):
+    """subject_ref from a structured message is persisted as actor in SQLite."""
+    import sqlite3
+
+    bridge, _transport, _fallback, _store, _adapter = _build_round_trip_bridge(tmp_path)
+    task = _make_destructive_task("subject-rt")
+    result = bridge.evaluate_and_maybe_gate(task)
+
+    sender = "@jay:trshpotato.win"
+    msg = {"text": f"/gate approve {result.gate_id}", "sender": sender}
+    bridge.process_reply(msg)
+
+    conn = sqlite3.connect(tmp_path / "hitl-roundtrip.sqlite")
+    row = conn.execute(
+        "SELECT actor FROM resolution_events ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == sender
+
+
+def test_round_trip_free_text_ignored(_round_trip):
+    """free text (not a /gate command) returns None — no resolution."""
+    bridge, _transport, _fallback, _store, _adapter = _round_trip
+    task = _make_destructive_task("freetext-rt")
+    result = bridge.evaluate_and_maybe_gate(task)
+
+    reply = bridge.process_reply("just chatting, not a gate command")
+    assert reply is None
+
+
+def test_round_trip_malformed_option(_round_trip):
+    """a /gate pick with an invalid option yields FALLBACK (MALFORMED)."""
+    bridge, _transport, _fallback, _store, _adapter = _round_trip
+    task = _make_destructive_task("malformed-rt")
+    result = bridge.evaluate_and_maybe_gate(task)
+
+    reply = bridge.process_reply(f"/gate pick nonexistent-opt {result.gate_id}")
+    assert reply is not None
+    assert reply.status is BridgeStatus.FALLBACK
+
+
+def test_round_trip_matrix_failure_falls_back(tmp_path):
+    """transport failure during present triggers Telegram fallback."""
+    bridge, _transport, fallback, _store, _adapter = _build_round_trip_bridge(
+        tmp_path, transport_fail=True
+    )
+    task = _make_destructive_task("fail-rt")
+    result = bridge.evaluate_and_maybe_gate(task)
+    assert result.status is BridgeStatus.FALLBACK
+    assert len(fallback) == 1
+    assert fallback[0].task_id == "fail-rt"
+
+
+def test_round_trip_unknown_gate_id(_round_trip):
+    """a /gate command referencing an unknown gate is safely ignored (None)."""
+    bridge, _transport, _fallback, _store, _adapter = _round_trip
+    reply = bridge.process_reply("/gate approve matrix-gate-9999")
+    # Unknown gate → MALFORMED decision, but bridge has no pending task for it.
+    # The MALFORMED outcome is not in the mapped set, so the bridge returns None
+    # rather than FALLBACK. This is safe: no resolution, no crash, no false gate.
+    assert reply is None
