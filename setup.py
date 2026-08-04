@@ -19,6 +19,7 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/jtstothard/agentic-fieldbook",
     packages=find_packages(),
+    package_data={"agentic_fieldbook.plugins.hitl_gate": ["plugin.yaml"]},
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
