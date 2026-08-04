@@ -1,0 +1,7 @@
+name: hitl-gate
+version: "0.1.0"
+description: "Feature-gated, destructive-only HITL routing through the Fieldbook gate bridge."
+author: "Jay Stothard <jtstothard@gmail.com>"
+kind: standalone
+hooks:
+  - pre_tool_call
