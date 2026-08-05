@@ -15,6 +15,9 @@ from agentic_fieldbook.plugins.hitl_gate import (
     _on_pre_gateway_dispatch,
     _on_pre_tool_call,
     _on_post_approval_response,
+    _forget_native_approval,
+    _native_session_for_gate,
+    _on_pre_approval_request,
     _remember_native_approval,
     _GATE_THREAD_STATE,
     register,
@@ -809,6 +812,62 @@ def test_native_timeout_retires_fieldbook_gate(monkeypatch):
     _remember_native_approval(gate_id, "session-timeout", bridge)
     _on_post_approval_response(choice="timeout", session_key="session-timeout")
     assert expired == [gate_id]
+
+
+def test_native_association_survives_cross_thread_callbacks_and_timeout(monkeypatch):
+    """Hook callbacks are allowed to execute on different host executors."""
+    import threading
+
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    command = "rm -rf /tmp/cross-executor"
+    gate_id = "gate-cross-executor"
+    expired = []
+    bridge = SimpleNamespace(expire_gate=lambda value: expired.append(value))
+    with patch(
+        "agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
+        return_value=_result(BridgeStatus.PENDING, "call-cross", gate_id=gate_id),
+    ):
+        first = threading.Thread(
+            target=_on_pre_tool_call,
+            kwargs={"tool_name": "terminal", "args": {"command": command},
+                    "task_id": "call-cross", "bridge": bridge},
+        )
+        first.start(); first.join()
+
+    second = threading.Thread(
+        target=_on_pre_approval_request,
+        kwargs={"command": command, "description": "destructive command",
+                "pattern_key": "rm-rf", "session_key": "native-cross"},
+    )
+    second.start(); second.join()
+    assert _native_session_for_gate(gate_id) == "native-cross"
+
+    _on_post_approval_response(choice="timeout", session_key="native-cross")
+    assert expired == [gate_id]
+    assert _native_session_for_gate(gate_id) is None
+    _forget_native_approval(gate_id)
+
+
+def test_register_rolls_back_hooks_after_partial_failure():
+    """A failed registration must not leave earlier callbacks active."""
+    class Manager:
+        def __init__(self):
+            self._hooks = {}
+
+    manager = Manager()
+    ctx = SimpleNamespace(_manager=manager)
+    calls = 0
+
+    def register_hook(name, callback):
+        nonlocal calls
+        calls += 1
+        manager._hooks.setdefault(name, []).append(callback)
+        if calls == 2:
+            raise RuntimeError("host rejected hook")
+
+    ctx.register_hook = register_hook
+    register(ctx)
+    assert manager._hooks == {}
 
 
 def test_failed_gate_message_does_not_leak_thread_association(monkeypatch):

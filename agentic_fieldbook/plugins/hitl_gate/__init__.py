@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import hashlib
 import threading
 from collections import deque
 from typing import Any, Mapping
@@ -16,10 +17,21 @@ from typing import Any, Mapping
 _LOG = logging.getLogger(__name__)
 _PENDING_NATIVE_APPROVALS: dict[str, str] = {}
 _NATIVE_APPROVAL_BRIDGES: dict[str, Any] = {}
+# Native approval callbacks may run on a different executor than pre_tool_call.
+# Keep the association in a process-wide, lock-protected request index instead
+# of context/thread-local state. Values are immutable (gate id + bridge).
+_PENDING_NATIVE_REQUESTS: dict[str, deque[tuple[str, Any]]] = {}
+_GATE_REQUEST_KEYS: dict[str, str] = {}
 _SEEN_GATE_EVENTS: set[str] = set()
 _SEEN_GATE_EVENTS_ORDER: deque[str] = deque()
 _PENDING_LOCK = threading.Lock()
-_GATE_THREAD_STATE = threading.local()
+
+# Kept as a compatibility sentinel for older plugin tests; it is deliberately
+# never used for association.
+class _LegacyGateState:
+    pass
+
+_GATE_THREAD_STATE = _LegacyGateState()
 
 try:  # Keep plugin discovery safe when the optional package is unavailable.
     from ...gate_bridge import RouterTask
@@ -125,6 +137,60 @@ def _authorized_sender(sender: str) -> bool:
     return bool(allowed) and sender in allowed
 
 
+def _native_request_key(*parts: Any) -> str:
+    """Return a stable, non-sensitive key for one native approval request."""
+    payload = "\x1f".join(str(part or "") for part in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _approval_request_identity(kwargs: Mapping[str, Any]) -> str:
+    explicit = kwargs.get("approval_id") or kwargs.get("request_id") or kwargs.get("approval_key")
+    if explicit:
+        return f"id:{explicit}"
+    return "request:" + _native_request_key(
+        kwargs.get("command"), kwargs.get("description"), kwargs.get("pattern_key"),
+        kwargs.get("session_key"), kwargs.get("surface"),
+    )
+
+
+def _queue_native_request(gate_id: str, bridge: Any, command: str, identity: str = "") -> None:
+    if not gate_id:
+        return
+    key = identity or ("command:" + _native_request_key(command))
+    with _PENDING_LOCK:
+        _PENDING_NATIVE_REQUESTS.setdefault(key, deque()).append((gate_id, bridge))
+        _GATE_REQUEST_KEYS[gate_id] = key
+        if bridge is not None:
+            _NATIVE_APPROVAL_BRIDGES[gate_id] = bridge
+
+
+def _dequeue_native_request(kwargs: Mapping[str, Any]) -> tuple[str, Any] | None:
+    identity = _approval_request_identity(kwargs)
+    command_key = "command:" + _native_request_key(kwargs.get("command"))
+    with _PENDING_LOCK:
+        for key in (identity, command_key):
+            queue = _PENDING_NATIVE_REQUESTS.get(key)
+            if queue:
+                gate_id, bridge = queue.popleft()
+                if not queue:
+                    _PENDING_NATIVE_REQUESTS.pop(key, None)
+                _GATE_REQUEST_KEYS[gate_id] = identity
+                return gate_id, bridge
+    return None
+
+
+def _forget_native_request(gate_id: str) -> None:
+    with _PENDING_LOCK:
+        key = _GATE_REQUEST_KEYS.pop(gate_id, None)
+        if key:
+            queue = _PENDING_NATIVE_REQUESTS.get(key)
+            if queue:
+                _PENDING_NATIVE_REQUESTS[key] = deque(item for item in queue if item[0] != gate_id)
+                if not _PENDING_NATIVE_REQUESTS[key]:
+                    _PENDING_NATIVE_REQUESTS.pop(key, None)
+        _NATIVE_APPROVAL_BRIDGES.pop(gate_id, None)
+
+
 def _native_session_for_gate(gate_id: str) -> str | None:
     with _PENDING_LOCK:
         return _PENDING_NATIVE_APPROVALS.get(gate_id)
@@ -139,8 +205,8 @@ def _remember_native_approval(gate_id: str, session_key: str, bridge: Any = None
 
 
 def _forget_native_approval(gate_id: str) -> str | None:
+    _forget_native_request(gate_id)
     with _PENDING_LOCK:
-        _NATIVE_APPROVAL_BRIDGES.pop(gate_id, None)
         return _PENDING_NATIVE_APPROVALS.pop(gate_id, None)
 
 
@@ -153,6 +219,15 @@ def _retire_native_approvals(session_key: str) -> None:
                    for gate_id in gate_ids]
         for gate_id in gate_ids:
             _PENDING_NATIVE_APPROVALS.pop(gate_id, None)
+            key = _GATE_REQUEST_KEYS.pop(gate_id, None)
+            if key:
+                queue = _PENDING_NATIVE_REQUESTS.get(key)
+                if queue:
+                    remaining = deque(item for item in queue if item[0] != gate_id)
+                    if remaining:
+                        _PENDING_NATIVE_REQUESTS[key] = remaining
+                    else:
+                        _PENDING_NATIVE_REQUESTS.pop(key, None)
     for gate_id, bridge in bridges:
         expire = getattr(bridge, "expire_gate", None)
         if callable(expire):
@@ -223,11 +298,8 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
 def _on_pre_tool_call(tool_name: str = "", args: Any = None,
                       task_id: str = "", **kwargs: Any) -> dict[str, str] | None:
     """Route destructive shell calls to the bridge, otherwise pass through."""
-    # Never inherit an association from an earlier failed invocation on this
-    # worker thread. A successful pending path sets it again below.
-    if hasattr(_GATE_THREAD_STATE, "gate_id"):
-        del _GATE_THREAD_STATE.gate_id
-    preserve_thread_state = False
+    preserve_request = False
+    gate_id = ""
     try:
         if not _enabled(kwargs.get("config")) or detect_destructive is None:
             return None
@@ -236,66 +308,42 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
             return None
         task = build_router_task(match, task_id=task_id)
         result = evaluate_or_fallback(
-            task,
-            fallback=lambda _task: None,
-            bridge=kwargs.get("bridge"),
+            task, fallback=lambda _task: None, bridge=kwargs.get("bridge"),
             gateway_context=kwargs.get("gateway_context"),
         )
         status_value = getattr(result, "status", None)
         status = getattr(status_value, "value", status_value)
         if status == "pending":
-            # The native approval request is fired immediately after this hook
-            # returns. Keep the bridge gate id thread-local until the
-            # pre_approval_request observer receives the canonical session key.
-            gate_id = getattr(result, "gate_id", None)
+            gate_id = getattr(result, "gate_id", None) or ""
             if isinstance(gate_id, str) and gate_id:
-                _GATE_THREAD_STATE.gate_id = gate_id
-                bridge = kwargs.get("bridge")
-                if bridge is not None:
-                    with _PENDING_LOCK:
-                        _NATIVE_APPROVAL_BRIDGES[gate_id] = bridge
+                command = args.get("command", "") if isinstance(args, Mapping) else str(args or "")
+                _queue_native_request(gate_id, kwargs.get("bridge"), command)
+                preserve_request = True
             message = _gate_message(task)
             if not isinstance(message, str):
                 return None
-            preserve_thread_state = True
             return {"action": "approve", "message": message}
         if status == "abort":
-            reason = getattr(result, "reason", "destructive action rejected")
-            if reason is None:
-                reason = "destructive action rejected"
-            if not isinstance(reason, str):
-                return None
-            return {"action": "block", "message": f"HITL gate blocked destructive action: {reason}"}
-        # PROCEED and FALLBACK intentionally return None. FALLBACK hands control
-        # to Hermes' established approval path rather than creating a second gate.
+            reason = getattr(result, "reason", "destructive action rejected") or "destructive action rejected"
+            return {"action": "block", "message": f"HITL gate blocked destructive action: {reason}"} if isinstance(reason, str) else None
         return None
     except Exception:
-        # The complete integration seam is fail-open: malformed context,
-        # detector/task/result data, bridge failures, and rendering failures
-        # all defer to Hermes' established approval path.
         return None
     finally:
-        if not preserve_thread_state:
-            gate_id = getattr(_GATE_THREAD_STATE, "gate_id", None)
-            if isinstance(gate_id, str):
-                with _PENDING_LOCK:
-                    _NATIVE_APPROVAL_BRIDGES.pop(gate_id, None)
-            if hasattr(_GATE_THREAD_STATE, "gate_id"):
-                del _GATE_THREAD_STATE.gate_id
+        if not preserve_request and gate_id:
+            _forget_native_request(gate_id)
 
 
 def _on_pre_approval_request(**kwargs: Any) -> None:
-    """Associate Hermes' blocking approval queue entry with our gate id."""
+    """Associate Hermes' approval entry with our gate across executors."""
     try:
-        gate_id = getattr(_GATE_THREAD_STATE, "gate_id", None)
+        association = _dequeue_native_request(kwargs)
         session_key = kwargs.get("session_key")
-        if isinstance(gate_id, str) and isinstance(session_key, str):
-            _remember_native_approval(gate_id, session_key)
+        if association and isinstance(session_key, str):
+            gate_id, bridge = association
+            _remember_native_approval(gate_id, session_key, bridge)
     except Exception:
         _LOG.debug("Unable to associate native approval with HITL gate", exc_info=True)
-    finally:
-        if hasattr(_GATE_THREAD_STATE, "gate_id"):
-            del _GATE_THREAD_STATE.gate_id
 
 
 def _on_post_approval_response(**kwargs: Any) -> None:
@@ -307,24 +355,48 @@ def _on_post_approval_response(**kwargs: Any) -> None:
 
 
 def register(ctx: Any) -> None:
-    """Register hooks; disabled-by-default is enforced here."""
-    try:
-        if detect_destructive is None:
-            return
-
-        def on_pre_tool_call(tool_name: str = "", args: Any = None, **kwargs: Any) -> dict[str, str] | None:
-            kwargs.setdefault("config", _config_from_context(ctx))
-            kwargs.setdefault("bridge", _bridge_from_context(ctx))
-            kwargs.setdefault("gateway_context", ctx)
-            return _on_pre_tool_call(tool_name, args, **kwargs)
-
-        ctx.register_hook("pre_tool_call", on_pre_tool_call)
-        ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
-        ctx.register_hook("pre_approval_request", _on_pre_approval_request)
-        ctx.register_hook("post_approval_response", _on_post_approval_response)
-    except Exception:
-        # Plugin discovery/registration must not make the host fail closed.
+    """Register the complete hook set, rolling back a partial registration."""
+    if detect_destructive is None:
         return
+
+    def on_pre_tool_call(tool_name: str = "", args: Any = None, **kwargs: Any) -> dict[str, str] | None:
+        kwargs.setdefault("config", _config_from_context(ctx))
+        kwargs.setdefault("bridge", _bridge_from_context(ctx))
+        kwargs.setdefault("gateway_context", ctx)
+        return _on_pre_tool_call(tool_name, args, **kwargs)
+
+    hooks = [
+        ("pre_tool_call", on_pre_tool_call),
+        ("pre_gateway_dispatch", _on_pre_gateway_dispatch),
+        ("pre_approval_request", _on_pre_approval_request),
+        ("post_approval_response", _on_post_approval_response),
+    ]
+    registered: list[tuple[str, Any]] = []
+    try:
+        for name, callback in hooks:
+            # Track before calling the host: a host may append the callback and
+            # then raise while finalizing registration.
+            registered.append((name, callback))
+            ctx.register_hook(name, callback)
+    except Exception:
+        # PluginContext currently has no public unregister API; remove only
+        # callbacks registered by this attempt, then leave discovery healthy.
+        manager = getattr(ctx, "_manager", None)
+        registry = getattr(manager, "_hooks", None)
+        if isinstance(registry, dict):
+            for name, callback in registered:
+                callbacks = registry.get(name, [])
+                registry[name] = [item for item in callbacks if item is not callback]
+                if not registry[name]:
+                    registry.pop(name, None)
+        unregister = getattr(ctx, "unregister_hook", None)
+        if callable(unregister):
+            for name, callback in reversed(registered):
+                try:
+                    unregister(name, callback)
+                except Exception:
+                    pass
+        _LOG.warning("HITL gate hook registration rolled back", exc_info=True)
 
 
 __all__ = ["register", "_on_pre_tool_call"]

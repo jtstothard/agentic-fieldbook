@@ -298,7 +298,7 @@ class FieldbookGateBridge:
                 outcome = getattr(result, "outcome", result)
                 value = getattr(outcome, "value", outcome)
                 gate_id = getattr(result, "gate_id", "")
-                task = self._pending.pop(gate_id, None)
+                task = self._pending.get(gate_id)
                 task_id = getattr(result, "task_id", "") or (task.task_id if task else "")
                 digest = task.contract_digest if task else None
 
@@ -307,9 +307,9 @@ class FieldbookGateBridge:
                 if task is None:
                     return None
 
-                # Expired/revoked outcomes are not human resolutions. In
-                # particular, a late reply after native timeout must not append
-                # a learning event.
+                # Persist before retiring the in-memory request.  If durable
+                # learning fails, the exception leaves _pending intact so a
+                # retried Matrix event can be processed again.
                 if value not in {"expired", "revoked"}:
                     self.learning_store.record_resolution(
                         task.action_class, task.fork_description, str(value),
@@ -317,13 +317,14 @@ class FieldbookGateBridge:
                         str(getattr(result, "subject_ref", "") or "unknown"), task.task_id,
                         task.contract_digest,
                     )
+                self._pending.pop(gate_id, None)
                 if value == "approved":
-                    return BridgeResult(BridgeStatus.PROCEED, task_id, outcome=value,
+                    return BridgeResult(BridgeStatus.PROCEED, task_id, gate_id=gate_id, outcome=value,
                                         contract_digest=digest)
                 if value in {"rejected", "expired", "revoked"}:
-                    return BridgeResult(BridgeStatus.ABORT, task_id, outcome=value,
+                    return BridgeResult(BridgeStatus.ABORT, task_id, gate_id=gate_id, outcome=value,
                                         contract_digest=digest)
-                return BridgeResult(BridgeStatus.FALLBACK, task_id, outcome=value,
+                return BridgeResult(BridgeStatus.FALLBACK, task_id, gate_id=gate_id, outcome=value,
                                     degradation_code="gate_malformed", contract_digest=digest)
         except Exception as exc:
             logger.warning("hitl gate reply failed to resolve: %s", exc, exc_info=True)
