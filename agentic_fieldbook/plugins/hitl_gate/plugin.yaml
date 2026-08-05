@@ -5,3 +5,6 @@ author: "Jay Stothard <jtstothard@gmail.com>"
 kind: standalone
 hooks:
   - pre_tool_call
+  - pre_gateway_dispatch
+  - pre_approval_request
+  - post_approval_response

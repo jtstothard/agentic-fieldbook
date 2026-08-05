@@ -315,6 +315,17 @@ class TestCommandParsing:
     def test_unknown_verb_ignored(self):
         assert parse_gate_command("/gate maybe matrix-gate-1") is None
 
+    @pytest.mark.parametrize("command", [
+        "/gate approve matrix-gate-1 extra",
+        "/gate reject matrix-gate-1 junk",
+        "/gate pick rolling matrix-gate-1 extra",
+        "/gate pick two words matrix-gate-1",
+        "/gate approve bad/id",
+        "/gate pick rolling bad id",
+    ])
+    def test_trailing_tokens_and_invalid_shapes_are_rejected(self, command):
+        assert parse_gate_command(command) is None
+
     def test_leading_whitespace_tolerated(self):
         parsed = parse_gate_command("  /gate approve matrix-gate-1")
         assert parsed is not None

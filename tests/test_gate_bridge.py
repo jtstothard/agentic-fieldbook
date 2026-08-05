@@ -78,3 +78,67 @@ def test_matrix_transport_uses_injected_live_adapter():
             return Sent()
     transport = transport_from_gateway({"matrix": Live()}, "!room:example")
     assert asyncio.run(transport.send("hello")) == "$event"
+
+
+def test_real_bridge_reply_preserves_gate_id_for_native_resolution(tmp_path):
+    """The production adapter decision must retain its gate identity."""
+    from agentic_fieldbook.matrix_gate_adapter import MatrixGateAdapter
+
+    class Transport:
+        def send(self, _room, _message):
+            return "$event"
+
+        def receive(self):
+            return ()
+
+    store = SQLiteLearningStore(tmp_path / "replies.db")
+    adapter = MatrixGateAdapter(Transport(), "!room:test")
+    bridge = FieldbookGateBridge(
+        learning_store=store, gate_adapter=adapter, fallback=lambda _task: None,
+        enabled=True, destructive_allowlist=("delete:item",),
+    )
+    pending = bridge.evaluate_and_maybe_gate(task())
+    resolved = bridge.process_reply(f"/gate approve {pending.gate_id}")
+
+    assert resolved is not None
+    assert resolved.gate_id == pending.gate_id
+    assert resolved.task_id == pending.task_id
+
+
+def test_reply_learning_failure_keeps_pending_for_retry(tmp_path):
+    """A transient durable-store failure must not consume the gate."""
+    from agentic_fieldbook.matrix_gate_adapter import MatrixGateAdapter
+
+    class Transport:
+        def send(self, _room, _message):
+            return "$event"
+
+        def receive(self):
+            return ()
+
+    class FlakyStore(SQLiteLearningStore):
+        def __init__(self, path):
+            super().__init__(path)
+            self.fail = True
+
+        def record_resolution(self, *args, **kwargs):
+            if self.fail:
+                self.fail = False
+                raise OSError("temporary learning-store outage")
+            return super().record_resolution(*args, **kwargs)
+
+    store = FlakyStore(tmp_path / "retry.db")
+    adapter = MatrixGateAdapter(Transport(), "!room:test")
+    bridge = FieldbookGateBridge(
+        learning_store=store, gate_adapter=adapter, fallback=lambda _task: None,
+        enabled=True, destructive_allowlist=("delete:item",),
+    )
+    pending = bridge.evaluate_and_maybe_gate(task())
+    message = f"/gate approve {pending.gate_id}"
+
+    assert bridge.process_reply(message) is None
+    assert pending.gate_id in bridge._pending
+    retry = bridge.process_reply(message)
+    assert retry is not None
+    assert retry.gate_id == pending.gate_id
+    assert pending.gate_id not in bridge._pending

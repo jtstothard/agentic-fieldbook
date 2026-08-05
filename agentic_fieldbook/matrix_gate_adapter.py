@@ -93,6 +93,7 @@ class ParsedGateCommand:
 # Match the leading ``/gate <verb>`` prefix (case-sensitive on the slash
 # command, matching the issue spec exactly).
 _GATE_PREFIX_RE = re.compile(r"^/gate\s+(approve|reject|pick)\s+(.+)$")
+_GATE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
 
 def parse_gate_command(text: str) -> ParsedGateCommand | None:
@@ -112,14 +113,18 @@ def parse_gate_command(text: str) -> ParsedGateCommand | None:
 
     if verb in ("approve", "reject"):
         # /gate approve <id>   or   /gate reject <id>
-        if len(tokens) < 1:
+        if len(tokens) != 1 or _GATE_TOKEN_RE.fullmatch(tokens[0]) is None:
             return None
         return ParsedGateCommand(
             verb=verb, gate_id=tokens[0], picked_option="",
         )
 
     # verb == "pick":  /gate pick <option> <id>
-    if len(tokens) < 2:
+    if (
+        len(tokens) != 2
+        or _GATE_TOKEN_RE.fullmatch(tokens[0]) is None
+        or _GATE_TOKEN_RE.fullmatch(tokens[1]) is None
+    ):
         return None
     return ParsedGateCommand(
         verb="pick", gate_id=tokens[1], picked_option=tokens[0],
