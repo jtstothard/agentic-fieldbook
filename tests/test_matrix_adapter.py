@@ -23,7 +23,6 @@ from agentic_fieldbook.light_gate import (
     LightGatePresentation,
     LightGateRequest,
     LightGateRevocation,
-    render_gate_message,
 )
 from agentic_fieldbook.matrix_gate_adapter import (
     MatrixGateAdapter,
@@ -31,6 +30,7 @@ from agentic_fieldbook.matrix_gate_adapter import (
     MatrixTransport,
     ParsedGateCommand,
     parse_gate_command,
+    render_gate_control_message,
 )
 
 
@@ -170,14 +170,18 @@ class TestPresent:
         assert event_id
 
     def test_present_content_is_rendered_message(self):
-        """Adapters wrap, they don't re-render — content = render_gate_message."""
+        """The Matrix path uses the control renderer, not the native-only body."""
         adapter, transport = make_adapter()
         request = adapter.create_request(**make_inputs())
         adapter.present(request.gate_id)
 
         sent_body = transport.sent[0][1]
-        expected = render_gate_message(request)
+        expected = render_gate_control_message(request)
         assert sent_body == expected
+        assert f"Gate ID: {request.gate_id}" in sent_body
+        assert f"/gate approve {request.gate_id}" in sent_body
+        assert f"/gate reject {request.gate_id}" in sent_body
+        assert f"/gate pick <option> {request.gate_id}" in sent_body
 
     def test_present_unknown_gate_returns_malformed(self):
         adapter, _ = make_adapter()

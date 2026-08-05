@@ -66,11 +66,25 @@ def test_hook_passes_through_proceed_and_fallback(monkeypatch, status):
 def test_hook_translates_pending_to_approval(monkeypatch):
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
     with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
-               return_value=_result(BridgeStatus.PENDING)):
+               return_value=_result(BridgeStatus.PENDING, gate_id="matrix-gate-42")):
         directive = _on_pre_tool_call("terminal", {"command": "DROP TABLE users"}, task_id="call-1")
     assert directive["action"] == "approve"
     assert directive["message"].startswith("Recommendation: ")
     assert "Fork:" in directive["message"]
+    assert "Gate ID: matrix-gate-42" in directive["message"]
+    assert "/gate approve matrix-gate-42" in directive["message"]
+    assert "/gate reject matrix-gate-42" in directive["message"]
+    assert "/gate pick <option> matrix-gate-42" in directive["message"]
+
+
+def test_hook_does_not_emit_control_message_without_gate_id(monkeypatch):
+    """A native approval must never advertise a missing/wrong gate identity."""
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
+               return_value=_result(BridgeStatus.PENDING)):
+        assert _on_pre_tool_call(
+            "terminal", {"command": "DROP TABLE users"}, task_id="call-1"
+        ) is None
 
 
 def test_hook_translates_abort_to_block(monkeypatch):

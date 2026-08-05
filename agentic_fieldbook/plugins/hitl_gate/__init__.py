@@ -35,7 +35,8 @@ _GATE_THREAD_STATE = _LegacyGateState()
 
 try:  # Keep plugin discovery safe when the optional package is unavailable.
     from ...gate_bridge import RouterTask
-    from ...light_gate import LightGateRequest, compute_fork_signature, render_gate_message
+    from ...light_gate import LightGateRequest, compute_fork_signature
+    from ...matrix_gate_adapter import render_gate_control_message
     from ...router_bridge import evaluate_or_fallback
     from .detector import build_router_task, detect_destructive
 except ImportError:  # pragma: no cover - exercised by loader smoke tests
@@ -43,7 +44,7 @@ except ImportError:  # pragma: no cover - exercised by loader smoke tests
     RouterTask = Any  # type: ignore[misc,assignment]
     LightGateRequest = Any  # type: ignore[misc,assignment]
     compute_fork_signature = None  # type: ignore[assignment]
-    render_gate_message = None  # type: ignore[assignment]
+    render_gate_control_message = None  # type: ignore[assignment]
     evaluate_or_fallback = None  # type: ignore[assignment]
     build_router_task = None  # type: ignore[assignment]
     detect_destructive = None  # type: ignore[assignment]
@@ -101,14 +102,14 @@ def _bridge_from_context(ctx: Any) -> Any:
         return None
 
 
-def _gate_message(task: Any) -> str:
+def _gate_message(task: Any, gate_id: str) -> str:
     """Render the canonical recommendation-first message for a pending task."""
     signature = compute_fork_signature(
         task.fork_description, task.recommended_option, task.options,
         task.trade_off, task.revert_path, "2999-01-01T00:00:00Z",
     )
     request = LightGateRequest(
-        gate_id=task.task_id,
+        gate_id=gate_id,
         fork_description=task.fork_description,
         recommended_option=task.recommended_option,
         options=task.options,
@@ -118,7 +119,7 @@ def _gate_message(task: Any) -> str:
         idempotency_key=task.idempotency_key or task.task_id,
         fork_signature=signature,
     )
-    return render_gate_message(request)
+    return render_gate_control_message(request)
 
 
 def _authorized_sender(sender: str) -> bool:
@@ -319,7 +320,7 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
                 command = args.get("command", "") if isinstance(args, Mapping) else str(args or "")
                 _queue_native_request(gate_id, kwargs.get("bridge"), command)
                 preserve_request = True
-            message = _gate_message(task)
+            message = _gate_message(task, gate_id)
             if not isinstance(message, str):
                 return None
             return {"action": "approve", "message": message}

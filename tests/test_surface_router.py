@@ -19,11 +19,11 @@ from agentic_fieldbook.light_gate import (
     LightGateOutcome,
     LightGatePresentation,
     LightGateRequest,
-    render_gate_message,
 )
 from agentic_fieldbook.matrix_gate_adapter import (
     MatrixGateAdapter,
     MatrixMessage,
+    render_gate_control_message,
 )
 from agentic_fieldbook.surface_router import (
     GateRouter,
@@ -204,7 +204,7 @@ class TestDefaultRouting:
         router.present(request.gate_id)
 
         sent_body = transport.sent[0][1]
-        expected = render_gate_message(request)
+        expected = render_gate_control_message(request)
         assert sent_body == expected
 
     def test_router_fulfils_surface_router_protocol(self):

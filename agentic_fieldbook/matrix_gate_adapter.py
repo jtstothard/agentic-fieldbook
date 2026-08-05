@@ -42,6 +42,22 @@ from .light_gate import (
     validate_light_gate_fields,
 )
 
+
+def render_gate_control_message(request: LightGateRequest) -> str:
+    """Render the control-room body with an addressable gate identity."""
+    if not isinstance(request.gate_id, str) or not request.gate_id.strip():
+        raise ValueError("cannot render gate control message without gate_id")
+    body = render_gate_message(request)
+    gate_id = request.gate_id.strip()
+    return (
+        f"{body}\n"
+        f"Gate ID: {gate_id}\n"
+        "Commands:\n"
+        f"/gate approve {gate_id}\n"
+        f"/gate reject {gate_id}\n"
+        f"/gate pick <option> {gate_id}"
+    )
+
 # --------------------------------------------------------------------------- #
 # Transport protocol (deployment-neutral)
 # --------------------------------------------------------------------------- #
@@ -246,9 +262,8 @@ class MatrixGateAdapter(LightGateAdapter):
                 reason="bad timestamp",
             )
 
-        # Content comes from the canonical renderer — the adapter wraps,
-        # it does not re-render.
-        body = render_gate_message(request)
+        # Matrix control rooms need an addressable gate identity and commands.
+        body = render_gate_control_message(request)
         event_id = self._transport.send(self._room, body)
         self._event_ids[gate_id] = event_id
 
