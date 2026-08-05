@@ -10,7 +10,13 @@ from agentic_fieldbook.plugins.hitl_gate.detector import (
     build_router_task,
     detect_destructive,
 )
-from agentic_fieldbook.plugins.hitl_gate import _bridge_from_context, _on_pre_tool_call, register
+from agentic_fieldbook.plugins.hitl_gate import (
+    _bridge_from_context,
+    _on_pre_gateway_dispatch,
+    _on_pre_tool_call,
+    _remember_native_approval,
+    register,
+)
 
 
 @pytest.mark.parametrize(
@@ -697,3 +703,75 @@ def test_hook_fires_approve_via_gateway_runner_ref(monkeypatch, tmp_path):
     assert result["action"] == "approve"
     assert isinstance(result["message"], str)
     assert result["message"]
+
+
+class _GateEvent:
+    def __init__(self, text, room="!gate:example", sender="@jay:example", event_id=None):
+        self.text = text
+        self.message_id = event_id
+        self.source = SimpleNamespace(
+            platform=SimpleNamespace(value="matrix"),
+            chat_id=room,
+            user_id=sender,
+        )
+
+
+def test_gate_room_approve_resolves_native_approval(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    gate_id = "gate-approve"
+    _remember_native_approval(gate_id, "session-1")
+    bridge = SimpleNamespace(
+        process_reply=lambda message: _result(BridgeStatus.PROCEED, "call-1", gate_id=gate_id)
+    )
+    with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        result = _on_pre_gateway_dispatch(_GateEvent(f"/gate approve {gate_id}"), gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    assert result["action"] == "skip"
+    resolve.assert_called_once_with("session-1", "once")
+
+
+def test_gate_room_reject_resolves_native_deny(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    gate_id = "gate-reject"
+    _remember_native_approval(gate_id, "session-2")
+    bridge = SimpleNamespace(
+        process_reply=lambda message: _result(BridgeStatus.ABORT, "call-1", gate_id=gate_id)
+    )
+    with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        _on_pre_gateway_dispatch(_GateEvent(f"/gate reject {gate_id}"), gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    resolve.assert_called_once_with("session-2", "deny")
+
+
+@pytest.mark.parametrize("sender", ["@intruder:example", None])
+def test_gate_room_unauthorized_sender_is_ignored(monkeypatch, sender):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    bridge = SimpleNamespace(process_reply=pytest.fail)
+    result = _on_pre_gateway_dispatch(_GateEvent("/gate approve gate-1", sender=sender), gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    assert result["action"] == "skip"
+
+
+def test_gate_room_free_text_and_stale_gate_are_noops(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    bridge = SimpleNamespace(process_reply=lambda message: None)
+    context = SimpleNamespace(hitl_gate_bridge=bridge)
+    assert _on_pre_gateway_dispatch(_GateEvent("hello"), gateway=context)["action"] == "skip"
+    with patch("tools.approval.resolve_gateway_approval") as resolve:
+        assert _on_pre_gateway_dispatch(_GateEvent("/gate approve stale"), gateway=context)["action"] == "skip"
+    resolve.assert_not_called()
+
+
+def test_gate_room_replay_is_idempotent(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    calls = []
+    bridge = SimpleNamespace(process_reply=lambda message: calls.append(message) or None)
+    context = SimpleNamespace(hitl_gate_bridge=bridge)
+    event = _GateEvent("/gate approve gate-replayed", event_id="$matrix-replay")
+    _on_pre_gateway_dispatch(event, gateway=context)
+    result = _on_pre_gateway_dispatch(event, gateway=context)
+    assert isinstance(result, dict)
+    assert result["reason"] == "replayed hitl gate event"
+    assert len(calls) == 1

@@ -7,8 +7,18 @@ which is translated into a veto.
 """
 from __future__ import annotations
 
+import logging
 import os
+import threading
+from collections import deque
 from typing import Any, Mapping
+
+_LOG = logging.getLogger(__name__)
+_PENDING_NATIVE_APPROVALS: dict[str, str] = {}
+_SEEN_GATE_EVENTS: set[str] = set()
+_SEEN_GATE_EVENTS_ORDER: deque[str] = deque()
+_PENDING_LOCK = threading.Lock()
+_GATE_THREAD_STATE = threading.local()
 
 try:  # Keep plugin discovery safe when the optional package is unavailable.
     from ...gate_bridge import RouterTask
@@ -98,6 +108,98 @@ def _gate_message(task: Any) -> str:
     return render_gate_message(request)
 
 
+def _authorized_sender(sender: str) -> bool:
+    """Apply the Matrix approval allow-list used by the native adapter."""
+    if not isinstance(sender, str) or not sender.strip():
+        return False
+    allow_all = os.environ.get("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in _ENABLED_VALUES
+    if allow_all:
+        return True
+    configured = (
+        os.environ.get("MATRIX_ALLOWED_USERS", "")
+        or os.environ.get("MATRIX_APPROVAL_SENDER", "")
+        or os.environ.get("MATRIX_OWNER_USER", "")
+    )
+    allowed = {item.strip() for item in configured.split(",") if item.strip()}
+    return bool(allowed) and sender in allowed
+
+
+def _native_session_for_gate(gate_id: str) -> str | None:
+    with _PENDING_LOCK:
+        return _PENDING_NATIVE_APPROVALS.get(gate_id)
+
+
+def _remember_native_approval(gate_id: str, session_key: str) -> None:
+    if gate_id and session_key:
+        with _PENDING_LOCK:
+            _PENDING_NATIVE_APPROVALS[gate_id] = session_key
+
+
+def _forget_native_approval(gate_id: str) -> str | None:
+    with _PENDING_LOCK:
+        return _PENDING_NATIVE_APPROVALS.pop(gate_id, None)
+
+
+def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str] | None:
+    """Resolve gate-room commands before they reach the agent dispatcher.
+
+    This is the Hermes inbound-event hook, rather than a Matrix transport poller.
+    It is deliberately fail-open: malformed events, unavailable bridges, and
+    approval resolver errors are logged and never break gateway dispatch.
+    """
+    try:
+        text = getattr(event, "text", None)
+        source = getattr(event, "source", None)
+        platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None))
+        room_id = getattr(source, "chat_id", None)
+        gate_room = os.environ.get("MATRIX_GATE_ROOM") or os.environ.get("MATRIX_HOME_ROOM")
+        if str(platform).lower() != "matrix" or not gate_room or room_id != gate_room:
+            return None
+
+        # Gate rooms are notification/control rooms, never ordinary agent input.
+        if not isinstance(text, str) or not text.lstrip().startswith("/gate"):
+            return {"action": "skip", "reason": "hitl gate room is notification-only"}
+        sender = getattr(source, "user_id", None) or getattr(source, "user_id_alt", None)
+        event_id = getattr(event, "message_id", None) or getattr(event, "event_id", None)
+        if isinstance(event_id, str) and event_id:
+            with _PENDING_LOCK:
+                if event_id in _SEEN_GATE_EVENTS:
+                    return {"action": "skip", "reason": "replayed hitl gate event"}
+                # Matrix event IDs are stable and the transport already bounds
+                # this set through its own deduplication. Keep a bounded local
+                # guard as well because the host hook is public and can be
+                # invoked directly by retries/tests.
+                if len(_SEEN_GATE_EVENTS_ORDER) >= 4096:
+                    _SEEN_GATE_EVENTS.discard(_SEEN_GATE_EVENTS_ORDER.popleft())
+                _SEEN_GATE_EVENTS.add(event_id)
+                _SEEN_GATE_EVENTS_ORDER.append(event_id)
+        if not _authorized_sender(sender):
+            _LOG.info("Ignoring unauthorized /gate command from %s", sender)
+            return {"action": "skip", "reason": "unauthorized hitl gate sender"}
+
+        context = kwargs.get("gateway") or kwargs.get("gateway_context")
+        bridge = _bridge_from_context(context) if context is not None else None
+        if bridge is None:
+            return {"action": "skip", "reason": "hitl gate bridge unavailable"}
+        result = bridge.process_reply({"text": text, "sender": sender})
+        if result is None:
+            return {"action": "skip", "reason": "unknown or malformed hitl gate command"}
+        status = getattr(getattr(result, "status", None), "value", getattr(result, "status", None))
+        gate_id = getattr(result, "gate_id", None) or ""
+        session_key = _native_session_for_gate(gate_id)
+        if session_key and status in {"proceed", "abort"}:
+            from tools.approval import resolve_gateway_approval
+            choice = "once" if status == "proceed" else "deny"
+            resolved = resolve_gateway_approval(session_key, choice)
+            _forget_native_approval(gate_id)
+            if resolved == 0:
+                _LOG.info("Stale /gate decision ignored for %s", gate_id)
+        return {"action": "skip", "reason": f"hitl gate {status or 'ignored'}"}
+    except Exception:
+        _LOG.warning("HITL gate inbound listener failed open", exc_info=True)
+        return {"action": "skip", "reason": "hitl gate listener unavailable"}
+
+
 def _on_pre_tool_call(tool_name: str = "", args: Any = None,
                       task_id: str = "", **kwargs: Any) -> dict[str, str] | None:
     """Route destructive shell calls to the bridge, otherwise pass through."""
@@ -117,6 +219,12 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
         status_value = getattr(result, "status", None)
         status = getattr(status_value, "value", status_value)
         if status == "pending":
+            # The native approval request is fired immediately after this hook
+            # returns. Keep the bridge gate id thread-local until the
+            # pre_approval_request observer receives the canonical session key.
+            gate_id = getattr(result, "gate_id", None)
+            if isinstance(gate_id, str) and gate_id:
+                _GATE_THREAD_STATE.gate_id = gate_id
             message = _gate_message(task)
             if not isinstance(message, str):
                 return None
@@ -138,6 +246,19 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
         return None
 
 
+def _on_pre_approval_request(**kwargs: Any) -> None:
+    """Associate Hermes' blocking approval queue entry with our gate id."""
+    try:
+        gate_id = getattr(_GATE_THREAD_STATE, "gate_id", None)
+        session_key = kwargs.get("session_key")
+        if isinstance(gate_id, str) and isinstance(session_key, str):
+            _remember_native_approval(gate_id, session_key)
+        if hasattr(_GATE_THREAD_STATE, "gate_id"):
+            del _GATE_THREAD_STATE.gate_id
+    except Exception:
+        _LOG.debug("Unable to associate native approval with HITL gate", exc_info=True)
+
+
 def register(ctx: Any) -> None:
     """Register the single pre-tool hook; disabled-by-default is enforced here."""
     try:
@@ -151,6 +272,8 @@ def register(ctx: Any) -> None:
             return _on_pre_tool_call(tool_name, args, **kwargs)
 
         ctx.register_hook("pre_tool_call", on_pre_tool_call)
+        ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
+        ctx.register_hook("pre_approval_request", _on_pre_approval_request)
     except Exception:
         # Plugin discovery/registration must not make the host fail closed.
         return
