@@ -524,9 +524,35 @@ def test_round_trip_unknown_gate_id(_round_trip):
     bridge, _transport, _fallback, _store, _adapter = _round_trip
     reply = bridge.process_reply("/gate approve matrix-gate-9999")
     # Unknown gate → MALFORMED decision, but bridge has no pending task for it.
-    # The MALFORMED outcome is not in the mapped set, so the bridge returns None
-    # rather than FALLBACK. This is safe: no resolution, no crash, no false gate.
+    # The bridge returns None rather than fabricating a BridgeResult with an
+    # empty task_id (which would violate BridgeResult's non-empty invariant).
     assert reply is None
+
+
+def test_round_trip_unknown_gate_id_is_clean(caplog, _round_trip):
+    """unknown gate_id must return None WITHOUT raising or logging a warning.
+
+    Regression for a bug found during live integration testing: the broad
+    except in process_reply was swallowing a ValueError caused by building a
+    BridgeResult with task_id="" for an unknown gate.  The None return is
+    correct, but it must be a clean early-return, not a swallowed exception
+    that emits "hitl gate reply failed to resolve" log noise on every
+    malformed reply.
+    """
+    bridge, _transport, _fallback, _store, _adapter = _round_trip
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="agentic_fieldbook.gate_bridge"):
+        reply = bridge.process_reply("/gate approve matrix-gate-9999")
+
+    assert reply is None
+    # No warning should be logged — the None is now an explicit early return,
+    # not a swallowed ValueError from the broad except handler.
+    assert not any(
+        "failed to resolve" in record.message
+        for record in caplog.records
+        if record.name == "agentic_fieldbook.gate_bridge"
+    ), f"unexpected warning logged: {[r.message for r in caplog.records]}"
 
 
 # ---------------------------------------------------------------------------
