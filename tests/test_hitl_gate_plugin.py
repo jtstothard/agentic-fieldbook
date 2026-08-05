@@ -14,7 +14,9 @@ from agentic_fieldbook.plugins.hitl_gate import (
     _bridge_from_context,
     _on_pre_gateway_dispatch,
     _on_pre_tool_call,
+    _on_post_approval_response,
     _remember_native_approval,
+    _GATE_THREAD_STATE,
     register,
 )
 
@@ -767,7 +769,11 @@ def test_gate_room_replay_is_idempotent(monkeypatch):
     monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
     monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
     calls = []
-    bridge = SimpleNamespace(process_reply=lambda message: calls.append(message) or None)
+    bridge = SimpleNamespace(
+        process_reply=lambda message: calls.append(message) or _result(
+            BridgeStatus.FALLBACK, "call-1", gate_id="gate-replayed"
+        )
+    )
     context = SimpleNamespace(hitl_gate_bridge=bridge)
     event = _GateEvent("/gate approve gate-replayed", event_id="$matrix-replay")
     _on_pre_gateway_dispatch(event, gateway=context)
@@ -775,3 +781,57 @@ def test_gate_room_replay_is_idempotent(monkeypatch):
     assert isinstance(result, dict)
     assert result["reason"] == "replayed hitl gate event"
     assert len(calls) == 1
+
+
+def test_gate_event_is_retryable_after_transient_bridge_failure(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    calls = []
+
+    def process(message):
+        calls.append(message)
+        if len(calls) == 1:
+            return None
+        return _result(BridgeStatus.FALLBACK, "call-1", gate_id="gate-retry")
+
+    event = _GateEvent("/gate approve gate-retry", event_id="$matrix-retry")
+    context = SimpleNamespace(hitl_gate_bridge=SimpleNamespace(process_reply=process))
+    _on_pre_gateway_dispatch(event, gateway=context)
+    result = _on_pre_gateway_dispatch(event, gateway=context)
+    assert result["reason"] == "hitl gate fallback"
+    assert len(calls) == 2
+
+
+def test_native_timeout_retires_fieldbook_gate(monkeypatch):
+    gate_id = "gate-timeout"
+    expired = []
+    bridge = SimpleNamespace(expire_gate=lambda value: expired.append(value))
+    _remember_native_approval(gate_id, "session-timeout", bridge)
+    _on_post_approval_response(choice="timeout", session_key="session-timeout")
+    assert expired == [gate_id]
+
+
+def test_failed_gate_message_does_not_leak_thread_association(monkeypatch):
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    pending = _result(BridgeStatus.PENDING, "call-1", gate_id="gate-failed-render")
+    with patch(
+        "agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
+        return_value=pending,
+    ), patch(
+        "agentic_fieldbook.plugins.hitl_gate._gate_message",
+        side_effect=RuntimeError("render failed"),
+    ):
+        assert _on_pre_tool_call(
+            "terminal", {"command": "DROP TABLE users"}, task_id="call-1",
+        ) is None
+    assert not hasattr(_GATE_THREAD_STATE, "gate_id")
+
+
+def test_home_room_is_not_an_inbound_gate_room(monkeypatch):
+    monkeypatch.delenv("MATRIX_GATE_ROOM", raising=False)
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example")
+    bridge = SimpleNamespace(process_reply=pytest.fail)
+    assert _on_pre_gateway_dispatch(
+        _GateEvent("/gate approve gate-1", room="!home:example"),
+        gateway=SimpleNamespace(hitl_gate_bridge=bridge),
+    ) is None

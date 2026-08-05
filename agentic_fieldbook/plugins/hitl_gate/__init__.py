@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 _LOG = logging.getLogger(__name__)
 _PENDING_NATIVE_APPROVALS: dict[str, str] = {}
+_NATIVE_APPROVAL_BRIDGES: dict[str, Any] = {}
 _SEEN_GATE_EVENTS: set[str] = set()
 _SEEN_GATE_EVENTS_ORDER: deque[str] = deque()
 _PENDING_LOCK = threading.Lock()
@@ -129,15 +130,33 @@ def _native_session_for_gate(gate_id: str) -> str | None:
         return _PENDING_NATIVE_APPROVALS.get(gate_id)
 
 
-def _remember_native_approval(gate_id: str, session_key: str) -> None:
+def _remember_native_approval(gate_id: str, session_key: str, bridge: Any = None) -> None:
     if gate_id and session_key:
         with _PENDING_LOCK:
             _PENDING_NATIVE_APPROVALS[gate_id] = session_key
+            if bridge is not None:
+                _NATIVE_APPROVAL_BRIDGES[gate_id] = bridge
 
 
 def _forget_native_approval(gate_id: str) -> str | None:
     with _PENDING_LOCK:
+        _NATIVE_APPROVAL_BRIDGES.pop(gate_id, None)
         return _PENDING_NATIVE_APPROVALS.pop(gate_id, None)
+
+
+def _retire_native_approvals(session_key: str) -> None:
+    """Expire Fieldbook gates when Hermes' native approval timed out."""
+    with _PENDING_LOCK:
+        gate_ids = [gate_id for gate_id, session in _PENDING_NATIVE_APPROVALS.items()
+                    if session == session_key]
+        bridges = [(gate_id, _NATIVE_APPROVAL_BRIDGES.pop(gate_id, None))
+                   for gate_id in gate_ids]
+        for gate_id in gate_ids:
+            _PENDING_NATIVE_APPROVALS.pop(gate_id, None)
+    for gate_id, bridge in bridges:
+        expire = getattr(bridge, "expire_gate", None)
+        if callable(expire):
+            expire(gate_id)
 
 
 def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str] | None:
@@ -152,7 +171,7 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
         source = getattr(event, "source", None)
         platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None))
         room_id = getattr(source, "chat_id", None)
-        gate_room = os.environ.get("MATRIX_GATE_ROOM") or os.environ.get("MATRIX_HOME_ROOM")
+        gate_room = os.environ.get("MATRIX_GATE_ROOM")
         if str(platform).lower() != "matrix" or not gate_room or room_id != gate_room:
             return None
 
@@ -165,14 +184,6 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
             with _PENDING_LOCK:
                 if event_id in _SEEN_GATE_EVENTS:
                     return {"action": "skip", "reason": "replayed hitl gate event"}
-                # Matrix event IDs are stable and the transport already bounds
-                # this set through its own deduplication. Keep a bounded local
-                # guard as well because the host hook is public and can be
-                # invoked directly by retries/tests.
-                if len(_SEEN_GATE_EVENTS_ORDER) >= 4096:
-                    _SEEN_GATE_EVENTS.discard(_SEEN_GATE_EVENTS_ORDER.popleft())
-                _SEEN_GATE_EVENTS.add(event_id)
-                _SEEN_GATE_EVENTS_ORDER.append(event_id)
         if not _authorized_sender(sender):
             _LOG.info("Ignoring unauthorized /gate command from %s", sender)
             return {"action": "skip", "reason": "unauthorized hitl gate sender"}
@@ -183,6 +194,9 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
             return {"action": "skip", "reason": "hitl gate bridge unavailable"}
         result = bridge.process_reply({"text": text, "sender": sender})
         if result is None:
+            # ``None`` also represents a bridge exception/unavailability. Do
+            # not retire the transport event in that case: Matrix may retry
+            # the same event after the transient failure clears.
             return {"action": "skip", "reason": "unknown or malformed hitl gate command"}
         status = getattr(getattr(result, "status", None), "value", getattr(result, "status", None))
         gate_id = getattr(result, "gate_id", None) or ""
@@ -194,6 +208,12 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
             _forget_native_approval(gate_id)
             if resolved == 0:
                 _LOG.info("Stale /gate decision ignored for %s", gate_id)
+        if isinstance(event_id, str) and event_id:
+            with _PENDING_LOCK:
+                if len(_SEEN_GATE_EVENTS_ORDER) >= 4096:
+                    _SEEN_GATE_EVENTS.discard(_SEEN_GATE_EVENTS_ORDER.popleft())
+                _SEEN_GATE_EVENTS.add(event_id)
+                _SEEN_GATE_EVENTS_ORDER.append(event_id)
         return {"action": "skip", "reason": f"hitl gate {status or 'ignored'}"}
     except Exception:
         _LOG.warning("HITL gate inbound listener failed open", exc_info=True)
@@ -203,6 +223,11 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
 def _on_pre_tool_call(tool_name: str = "", args: Any = None,
                       task_id: str = "", **kwargs: Any) -> dict[str, str] | None:
     """Route destructive shell calls to the bridge, otherwise pass through."""
+    # Never inherit an association from an earlier failed invocation on this
+    # worker thread. A successful pending path sets it again below.
+    if hasattr(_GATE_THREAD_STATE, "gate_id"):
+        del _GATE_THREAD_STATE.gate_id
+    preserve_thread_state = False
     try:
         if not _enabled(kwargs.get("config")) or detect_destructive is None:
             return None
@@ -225,9 +250,14 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
             gate_id = getattr(result, "gate_id", None)
             if isinstance(gate_id, str) and gate_id:
                 _GATE_THREAD_STATE.gate_id = gate_id
+                bridge = kwargs.get("bridge")
+                if bridge is not None:
+                    with _PENDING_LOCK:
+                        _NATIVE_APPROVAL_BRIDGES[gate_id] = bridge
             message = _gate_message(task)
             if not isinstance(message, str):
                 return None
+            preserve_thread_state = True
             return {"action": "approve", "message": message}
         if status == "abort":
             reason = getattr(result, "reason", "destructive action rejected")
@@ -244,6 +274,14 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
         # detector/task/result data, bridge failures, and rendering failures
         # all defer to Hermes' established approval path.
         return None
+    finally:
+        if not preserve_thread_state:
+            gate_id = getattr(_GATE_THREAD_STATE, "gate_id", None)
+            if isinstance(gate_id, str):
+                with _PENDING_LOCK:
+                    _NATIVE_APPROVAL_BRIDGES.pop(gate_id, None)
+            if hasattr(_GATE_THREAD_STATE, "gate_id"):
+                del _GATE_THREAD_STATE.gate_id
 
 
 def _on_pre_approval_request(**kwargs: Any) -> None:
@@ -253,14 +291,23 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
         session_key = kwargs.get("session_key")
         if isinstance(gate_id, str) and isinstance(session_key, str):
             _remember_native_approval(gate_id, session_key)
-        if hasattr(_GATE_THREAD_STATE, "gate_id"):
-            del _GATE_THREAD_STATE.gate_id
     except Exception:
         _LOG.debug("Unable to associate native approval with HITL gate", exc_info=True)
+    finally:
+        if hasattr(_GATE_THREAD_STATE, "gate_id"):
+            del _GATE_THREAD_STATE.gate_id
+
+
+def _on_post_approval_response(**kwargs: Any) -> None:
+    """Retire Fieldbook state when Hermes' native approval expires."""
+    if kwargs.get("choice") == "timeout":
+        session_key = kwargs.get("session_key")
+        if isinstance(session_key, str):
+            _retire_native_approvals(session_key)
 
 
 def register(ctx: Any) -> None:
-    """Register the single pre-tool hook; disabled-by-default is enforced here."""
+    """Register hooks; disabled-by-default is enforced here."""
     try:
         if detect_destructive is None:
             return
@@ -274,6 +321,7 @@ def register(ctx: Any) -> None:
         ctx.register_hook("pre_tool_call", on_pre_tool_call)
         ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
         ctx.register_hook("pre_approval_request", _on_pre_approval_request)
+        ctx.register_hook("post_approval_response", _on_post_approval_response)
     except Exception:
         # Plugin discovery/registration must not make the host fail closed.
         return
