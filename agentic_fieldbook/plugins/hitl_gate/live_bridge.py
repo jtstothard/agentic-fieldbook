@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import asyncio
-import threading
+import concurrent.futures
 from pathlib import Path
 from typing import Any, Callable
 
@@ -37,31 +37,32 @@ def _telegram_fallback(context: Any) -> Callable[[Any], None]:
 
 class _SynchronousMatrixTransport:
     """Adapt the gateway's async transport to the synchronous gate adapter."""
-    def __init__(self, transport: Any) -> None:
+    def __init__(self, transport: Any, loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._transport = transport
+        self._loop = loop
 
     def send(self, room_id: str, message: str) -> str:
         del room_id  # The wrapped Hermes transport owns the configured room.
         coroutine = self._transport.send(message)
+        # pre_tool_call is invoked synchronously from Hermes' agent worker, not
+        # necessarily from the gateway event-loop thread.  Use the loop captured
+        # from GatewayRunner when available; running asyncio.run() in the worker
+        # creates a second loop and breaks Matrix client's aiohttp/timeout state.
+        target_loop = self._loop
+        if target_loop is not None and not target_loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(coroutine, target_loop)
+            return future.result(timeout=30)
+        # Direct callers/tests may construct this adapter outside a gateway.
         try:
-            asyncio.get_running_loop()
+            running_loop = asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coroutine)
-        result: list[str] = []
-        failure: list[BaseException] = []
-
-        def run() -> None:
-            try:
-                result.append(asyncio.run(coroutine))
-            except BaseException as exc:  # returned through the bridge fallback
-                failure.append(exc)
-
-        thread = threading.Thread(target=run, daemon=True)
-        thread.start()
-        thread.join()
-        if failure:
-            raise failure[0]
-        return result[0]
+        # Avoid deadlocking if a direct caller invokes the synchronous adapter
+        # on the target loop itself; this remains a defensive fallback.
+        if running_loop is target_loop:
+            raise RuntimeError("synchronous Matrix send cannot block the gateway loop")
+        future = asyncio.run_coroutine_threadsafe(coroutine, running_loop)
+        return future.result(timeout=30)
 
     def receive(self) -> tuple[Any, ...]:
         # Gateway event dispatch owns inbound Matrix traffic; this adapter is
@@ -108,7 +109,14 @@ def build_live_bridge(context: Any) -> Any:
         raise ValueError("MATRIX_HOME_ROOM or MATRIX_GATE_ROOM is required")
     adapters = _resolve_adapters(context)
     transport = transport_from_gateway(adapters, room_id)
-    gate_adapter = MatrixGateAdapter(_SynchronousMatrixTransport(transport), room_id)
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        pass
+    gateway_loop = getattr(runner, "_gateway_loop", None)
+    gate_adapter = MatrixGateAdapter(_SynchronousMatrixTransport(transport, gateway_loop), room_id)
     return FieldbookGateBridge(
         learning_store=SQLiteLearningStore(_state_path()),
         gate_adapter=gate_adapter,
