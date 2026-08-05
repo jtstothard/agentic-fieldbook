@@ -295,13 +295,22 @@ class FieldbookGateBridge:
             task = self._pending.pop(gate_id, None)
             task_id = getattr(result, "task_id", "") or (task.task_id if task else "")
             digest = task.contract_digest if task else None
-            if task is not None:
-                self.learning_store.record_resolution(
-                    task.action_class, task.fork_description, str(value),
-                    str(getattr(result, "chosen_option", "") or ""),
-                    str(getattr(result, "subject_ref", "") or "unknown"), task.task_id,
-                    task.contract_digest,
-                )
+
+            # If we cannot resolve a known pending task for this reply, the
+            # gate_id references something we never tracked (stale, wrong room,
+            # duplicate, or replay).  Treat as free-text/ignored rather than
+            # fabricating a BridgeResult with an empty task_id, which would
+            # violate BridgeResult's non-empty invariant and trip the broad
+            # except below with a confusing ValueError.
+            if task is None:
+                return None
+
+            self.learning_store.record_resolution(
+                task.action_class, task.fork_description, str(value),
+                str(getattr(result, "chosen_option", "") or ""),
+                str(getattr(result, "subject_ref", "") or "unknown"), task.task_id,
+                task.contract_digest,
+            )
             if value == "approved":
                 return BridgeResult(BridgeStatus.PROCEED, task_id, outcome=value,
                                     contract_digest=digest)
