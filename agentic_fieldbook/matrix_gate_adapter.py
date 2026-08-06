@@ -207,6 +207,9 @@ class MatrixGateAdapter(LightGateAdapter):
         self._event_ids: dict[str, str] = {}           # gate_id → matrix event_id
         self._revoked: set[str] = set()
         self._reaction_events: set[str] = set()
+        self._reaction_gate_ids: dict[str, str] = {}
+        self._reaction_reservations: set[str] = set()
+        self._resolution_reservations: set[str] = set()
         self._namespace = uuid.uuid4().hex[:12]
         self._counter = 0
         self._lock = threading.Lock()
@@ -290,9 +293,23 @@ class MatrixGateAdapter(LightGateAdapter):
         event_id = self._transport.send(self._room, body)
         if not isinstance(event_id, str) or not event_id.strip():
             # A transport that does not return a usable event ID cannot bind
-            # reactions to this exact prompt.  Never publish PRESENTED and do
-            # not leave a stale native association behind in the adapter.
-            self._event_ids.pop(gate_id, None)
+            # reactions to this exact prompt.  Remove the whole failed request
+            # atomically so the idempotency key can create a clean retry.
+            with self._lock:
+                request = self._requests.pop(gate_id, None)
+                if request is not None and self._by_key.get(request.idempotency_key) == gate_id:
+                    self._by_key.pop(request.idempotency_key, None)
+                self._event_ids.pop(gate_id, None)
+                self._revoked.discard(gate_id)
+                self._resolution_reservations.discard(gate_id)
+                stale_reactions = [
+                    reaction for reaction, gate in self._reaction_gate_ids.items()
+                    if gate == gate_id
+                ]
+                for reaction in stale_reactions:
+                    self._reaction_gate_ids.pop(reaction, None)
+                    self._reaction_events.discard(reaction)
+                    self._reaction_reservations.discard(reaction)
             return LightGatePresentation(
                 LightGateOutcome.MALFORMED,
                 gate_id,
@@ -458,20 +475,40 @@ class MatrixGateAdapter(LightGateAdapter):
         if room_id and room_id != self._room:
             return None
         with self._lock:
-            if event_id and event_id in self._reaction_events:
+            if event_id in self._reaction_events or event_id in self._reaction_reservations:
                 return None
             gate_id = next((gate for gate, event in self._event_ids.items()
                             if event == prompt_event_id), None)
             if gate_id is None or gate_id in self._revoked:
                 return None
             request = self._requests.get(gate_id)
-            if request is None:
+            if request is None or gate_id in self._resolution_reservations:
                 return None
             chosen = request.recommended_option if key == "✅" else ""
+            # Reserve both identities before leaving the lock.  The reaction is
+            # only consumed after durable resolution returns a terminal result;
+            # failed/non-terminal writes must leave this exact event retryable.
+            self._reaction_reservations.add(event_id)
+            self._reaction_gate_ids[event_id] = gate_id
+            self._resolution_reservations.add(gate_id)
+
+        try:
             decision = self.record_decision(gate_id, chosen, str(sender or ""))
-            value = getattr(getattr(decision, "outcome", None), "value", None)
-            if event_id and value in {"approved", "rejected", "expired", "revoked"}:
+        except Exception:
+            with self._lock:
+                self._reaction_reservations.discard(event_id)
+                self._reaction_gate_ids.pop(event_id, None)
+                self._resolution_reservations.discard(gate_id)
+            return None
+
+        value = getattr(getattr(decision, "outcome", None), "value", None)
+        with self._lock:
+            self._reaction_reservations.discard(event_id)
+            self._resolution_reservations.discard(gate_id)
+            if value in {"approved", "rejected", "expired", "revoked"}:
                 self._reaction_events.add(event_id)
+            else:
+                self._reaction_gate_ids.pop(event_id, None)
             return decision
 
     def get_matrix_event_id(self, gate_id: str) -> str:

@@ -214,6 +214,65 @@ class TestPresent:
             assert presentation.reason == "transport returned no usable event id"
             assert adapter.get_matrix_event_id(request.gate_id) == ""
 
+    def test_present_failed_event_id_removes_request_for_clean_retry(self):
+        class RetryingTransport(FakeTransport):
+            def __init__(self):
+                super().__init__()
+                self.results = [None, "$evt-retry"]
+
+            def send(self, room_id: str, message: str):
+                self.sent.append((room_id, message))
+                return self.results.pop(0)
+
+        transport = RetryingTransport()
+        adapter = MatrixGateAdapter(
+            transport, ROOM, allowed_senders={"@jay:example"}
+        )
+        first = adapter.create_request(**make_inputs())
+        adapter._event_ids[first.gate_id] = "$stale"
+        failed = adapter.present(first.gate_id)
+        assert failed.outcome is LightGateOutcome.MALFORMED
+        assert first.gate_id not in adapter._requests
+        assert first.idempotency_key not in adapter._by_key
+        assert first.gate_id not in adapter._event_ids
+        assert first.gate_id not in adapter._revoked
+
+        retry = adapter.create_request(**make_inputs())
+        assert retry.gate_id != first.gate_id
+        presented = adapter.present(retry.gate_id)
+        assert presented.outcome is LightGateOutcome.PRESENTED
+        assert adapter.get_matrix_event_id(retry.gate_id) == "$evt-retry"
+
+    def test_present_failed_event_id_cleans_reaction_state(self):
+        class EmptyTransport:
+            def __init__(self):
+                self.sent: list[tuple[str, str]] = []
+
+            def send(self, room_id: str, message: str) -> None:
+                self.sent.append((room_id, message))
+                return None
+
+            def receive(self) -> tuple[MatrixMessage, ...]:
+                return ()
+
+        adapter = MatrixGateAdapter(
+            EmptyTransport(), ROOM, allowed_senders={"@jay:example"}
+        )
+        request = adapter.create_request(**make_inputs())
+        adapter._reaction_events.add("$reaction")
+        adapter._reaction_gate_ids["$reaction"] = request.gate_id
+        adapter._reaction_reservations.add("$inflight")
+        adapter._reaction_gate_ids["$inflight"] = request.gate_id
+        adapter._resolution_reservations.add(request.gate_id)
+        adapter._event_ids[request.gate_id] = "$prompt"
+        failed = adapter.present(request.gate_id)
+        assert failed.outcome is LightGateOutcome.MALFORMED
+        assert request.gate_id not in adapter._requests
+        assert request.gate_id not in adapter._event_ids
+        assert request.gate_id not in adapter._resolution_reservations
+        assert "$inflight" not in adapter._reaction_reservations
+        assert "$reaction" not in adapter._reaction_events
+
     def test_present_expired_gate_returns_expired(self):
         adapter, _ = make_adapter()
         request = adapter.create_request(**make_inputs(expires_at=EXPIRES_PAST))
@@ -283,6 +342,38 @@ class TestRecordDecision:
         assert decision is not None
         assert decision.outcome is LightGateOutcome.APPROVED
         assert decision.chosen_option == request.recommended_option
+
+    def test_reaction_resolution_failure_releases_event_for_retry(self):
+        adapter, _ = make_adapter()
+        request = adapter.create_request(**make_inputs())
+        adapter.present(request.gate_id)
+        event = {
+            "event_type": "m.reaction", "event_id": "$retryable",
+            "sender": "@jay:example", "room_id": ROOM,
+            "relates_to": {"rel_type": "m.annotation",
+                "event_id": adapter.get_matrix_event_id(request.gate_id), "key": "✅"},
+        }
+        original = adapter.record_decision
+        attempts = 0
+
+        def fail_once(gate_id, chosen_option, subject_ref):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("durable store unavailable")
+            return original(gate_id, chosen_option, subject_ref)
+
+        adapter.record_decision = fail_once
+        assert adapter.process_reaction(event) is None
+        assert "$retryable" not in adapter._reaction_events
+        assert "$retryable" not in adapter._reaction_reservations
+        assert request.gate_id not in adapter._resolution_reservations
+
+        decision = adapter.process_reaction(event)
+        assert decision is not None
+        assert decision.outcome is LightGateOutcome.APPROVED
+        assert attempts == 2
+        assert "$retryable" in adapter._reaction_events
 
     def test_unauthorized_reaction_sender_is_ignored(self):
         adapter, _ = make_adapter()
