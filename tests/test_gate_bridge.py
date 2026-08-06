@@ -93,7 +93,7 @@ def test_real_bridge_reply_preserves_gate_id_for_native_resolution(tmp_path):
             return ()
 
     store = SQLiteLearningStore(tmp_path / "replies.db")
-    adapter = MatrixGateAdapter(Transport(), "!room:test")
+    adapter = MatrixGateAdapter(Transport(), "!room:test", allowed_senders={"@jay:example"})
     bridge = FieldbookGateBridge(
         learning_store=store, gate_adapter=adapter, fallback=lambda _task: None,
         enabled=True, destructive_allowlist=("delete:item",),
@@ -129,7 +129,7 @@ def test_reply_learning_failure_keeps_pending_for_retry(tmp_path):
             return super().record_resolution(*args, **kwargs)
 
     store = FlakyStore(tmp_path / "retry.db")
-    adapter = MatrixGateAdapter(Transport(), "!room:test")
+    adapter = MatrixGateAdapter(Transport(), "!room:test", allowed_senders={"@jay:example"})
     bridge = FieldbookGateBridge(
         learning_store=store, gate_adapter=adapter, fallback=lambda _task: None,
         enabled=True, destructive_allowlist=("delete:item",),

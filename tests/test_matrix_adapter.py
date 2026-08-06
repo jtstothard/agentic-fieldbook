@@ -65,7 +65,7 @@ def make_adapter(
     *, validity_window=None, expires_at=EXPIRES_FUTURE,
 ) -> tuple[MatrixGateAdapter, FakeTransport]:
     transport = FakeTransport()
-    adapter = MatrixGateAdapter(transport, ROOM)
+    adapter = MatrixGateAdapter(transport, ROOM, allowed_senders={"@jay:example"})
     return adapter, transport
 
 
@@ -192,6 +192,28 @@ class TestPresent:
         presentation = adapter.present("nonexistent")
         assert presentation.outcome is LightGateOutcome.MALFORMED
 
+    def test_present_rejects_unusable_transport_event_id(self):
+        """A send without a string event ID cannot create a reaction binding."""
+        class UnusableTransport(FakeTransport):
+            def __init__(self, result):
+                super().__init__()
+                self.result = result
+
+            def send(self, room_id: str, message: str):
+                self.sent.append((room_id, message))
+                return self.result
+
+        for result in (None, "", "   ", 42):
+            transport = UnusableTransport(result)
+            adapter = MatrixGateAdapter(
+                transport, ROOM, allowed_senders={"@jay:example"}
+            )
+            request = adapter.create_request(**make_inputs())
+            presentation = adapter.present(request.gate_id)
+            assert presentation.outcome is LightGateOutcome.MALFORMED
+            assert presentation.reason == "transport returned no usable event id"
+            assert adapter.get_matrix_event_id(request.gate_id) == ""
+
     def test_present_expired_gate_returns_expired(self):
         adapter, _ = make_adapter()
         request = adapter.create_request(**make_inputs(expires_at=EXPIRES_PAST))
@@ -261,6 +283,50 @@ class TestRecordDecision:
         assert decision is not None
         assert decision.outcome is LightGateOutcome.APPROVED
         assert decision.chosen_option == request.recommended_option
+
+    def test_unauthorized_reaction_sender_is_ignored(self):
+        adapter, _ = make_adapter()
+        request = adapter.create_request(**make_inputs())
+        adapter.present(request.gate_id)
+        decision = adapter.process_reaction({
+            "event_type": "m.reaction", "event_id": "$unauthorized",
+            "sender": "@attacker:example", "room_id": ROOM,
+            "relates_to": {"rel_type": "m.annotation",
+                "event_id": adapter.get_matrix_event_id(request.gate_id), "key": "✅"},
+        }, subject_ref="@jay:example")
+        assert decision is None
+
+    def test_reaction_without_room_is_ignored(self):
+        adapter, _ = make_adapter()
+        request = adapter.create_request(**make_inputs())
+        adapter.present(request.gate_id)
+        decision = adapter.process_reaction({
+            "event_type": "m.reaction", "event_id": "$missing-room",
+            "sender": "@jay:example",
+            "relates_to": {"rel_type": "m.annotation",
+                "event_id": adapter.get_matrix_event_id(request.gate_id), "key": "✅"},
+        }, subject_ref="@jay:example")
+        assert decision is None
+
+    def test_reaction_authorization_configuration_is_required(self):
+        with pytest.raises(ValueError, match="reaction authorization"):
+            MatrixGateAdapter(FakeTransport(), ROOM)
+
+    def test_reaction_authorization_callback_is_used(self):
+        transport = FakeTransport()
+        adapter = MatrixGateAdapter(
+            transport, ROOM, authorize_sender=lambda sender: sender == "@jay:example"
+        )
+        request = adapter.create_request(**make_inputs())
+        adapter.present(request.gate_id)
+        decision = adapter.process_reaction({
+            "event_type": "m.reaction", "event_id": "$callback",
+            "sender": "@jay:example", "room_id": ROOM,
+            "relates_to": {"rel_type": "m.annotation",
+                "event_id": adapter.get_matrix_event_id(request.gate_id), "key": "✅"},
+        })
+        assert decision is not None
+        assert decision.outcome is LightGateOutcome.APPROVED
 
     def test_reaction_reject_binds_to_prompt_event(self):
         adapter, _ = make_adapter()
@@ -525,7 +591,7 @@ class TestDeploymentNeutrality:
     def test_takes_matrix_transport_protocol(self):
         """The adapter accepts any object with send/receive methods."""
         transport = FakeTransport()
-        adapter = MatrixGateAdapter(transport, ROOM)
+        adapter = MatrixGateAdapter(transport, ROOM, allowed_senders={"@jay:example"})
         assert isinstance(transport, MatrixTransport)
 
     def test_no_direct_gateway_import(self):

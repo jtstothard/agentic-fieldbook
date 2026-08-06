@@ -480,7 +480,8 @@ def _build_round_trip_bridge(tmp_path, *, transport_fail: bool = False, enabled:
     transport = _FakeReplyTransport(fail=transport_fail)
     fallback_calls: list = []
     adapter = MatrixGateAdapter(
-        transport, "!room:test", validity_window=timedelta(seconds=300)
+        transport, "!room:test", validity_window=timedelta(seconds=300),
+        allowed_senders={"@jay:example"},
     )
     bridge = FieldbookGateBridge(
         learning_store=store,

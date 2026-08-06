@@ -183,7 +183,7 @@ def _wire(
 ) -> tuple[DecisionBridge, MatrixGateAdapter, FakeTransport, GateSubscriber]:
     """Wire the full chain with real components; return (bridge, adapter, transport, subscriber)."""
     transport = FakeTransport()
-    adapter = MatrixGateAdapter(transport, ROOM)
+    adapter = MatrixGateAdapter(transport, ROOM, allowed_senders={"@jay:example"})
     router = GateRouter(matrix_adapter=adapter)
     bridge = DecisionBridge(router, adapter, auto_reply=auto_reply)
     subscriber = GateSubscriber(

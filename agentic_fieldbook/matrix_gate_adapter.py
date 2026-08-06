@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 import threading
 import uuid
+from collections.abc import Iterable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, runtime_checkable
@@ -186,10 +187,20 @@ class MatrixGateAdapter(LightGateAdapter):
         control_room: str,
         *,
         validity_window: timedelta = timedelta(minutes=5),
+        allowed_senders: Iterable[str] = (),
+        authorize_sender: Callable[[str], bool] | None = None,
     ) -> None:
         self._transport = transport
         self._room = control_room
         self._validity_window = validity_window
+        configured_senders = frozenset(
+            sender.strip() for sender in allowed_senders
+            if isinstance(sender, str) and sender.strip()
+        )
+        if not configured_senders and not callable(authorize_sender):
+            raise ValueError("Matrix reaction authorization requires allowed_senders or authorize_sender")
+        self._allowed_senders = configured_senders
+        self._authorize_sender = authorize_sender
 
         self._requests: dict[str, LightGateRequest] = {}
         self._by_key: dict[str, str] = {}              # idempotency_key → gate_id
@@ -277,6 +288,21 @@ class MatrixGateAdapter(LightGateAdapter):
         # Matrix control rooms need an addressable gate identity and commands.
         body = render_gate_control_message(request)
         event_id = self._transport.send(self._room, body)
+        if not isinstance(event_id, str) or not event_id.strip():
+            # A transport that does not return a usable event ID cannot bind
+            # reactions to this exact prompt.  Never publish PRESENTED and do
+            # not leave a stale native association behind in the adapter.
+            self._event_ids.pop(gate_id, None)
+            return LightGatePresentation(
+                LightGateOutcome.MALFORMED,
+                gate_id,
+                "",
+                "",
+                (),
+                "",
+                "",
+                reason="transport returned no usable event id",
+            )
         self._event_ids[gate_id] = event_id
 
         return LightGatePresentation(
@@ -385,6 +411,15 @@ class MatrixGateAdapter(LightGateAdapter):
 
         return self.record_decision(parsed.gate_id, chosen, subject_ref)
 
+    def _sender_is_authorized(self, sender: str) -> bool:
+        """Check the configured adapter-level reaction authorization policy."""
+        if self._authorize_sender is not None:
+            try:
+                return self._authorize_sender(sender) is True
+            except Exception:
+                return False
+        return sender in self._allowed_senders
+
     def process_reaction(
         self, message: object, subject_ref: str = "",
     ) -> LightGateDecision | None:
@@ -397,16 +432,22 @@ class MatrixGateAdapter(LightGateAdapter):
         approval signals.
         """
         event_id = _event_value(message, "event_id", "message_id")
-        sender = _event_value(message, "sender", "user_id") or subject_ref
+        sender = _event_value(message, "sender", "user_id")
         room_id = _event_value(message, "room_id", "chat_id")
         event_type = _event_value(message, "event_type", "type")
         relation = _reaction_relation(message)
         if (
             not isinstance(event_id, str)
             or not event_id.strip()
+            or not isinstance(sender, str)
+            or not sender.strip()
+            or not isinstance(room_id, str)
+            or not room_id.strip()
             or event_type not in {"m.reaction", "reaction"}
             or not relation
         ):
+            return None
+        if room_id != self._room or not self._sender_is_authorized(sender):
             return None
         if relation.get("rel_type") not in {"m.annotation", "annotation"}:
             return None
