@@ -287,6 +287,24 @@ def test_hook_fails_closed_on_rendering_exception(monkeypatch):
     assert not bridge._pending
 
 
+@pytest.mark.parametrize("rendered", [None, "", 42])
+def test_hook_fails_closed_on_non_presented_gate_message(monkeypatch, rendered):
+    """A required gate never passes through without a usable presentation."""
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    bridge = SimpleNamespace(is_pending_for=lambda _gate_id, _task_id: True,
+                             _pending={"gate-rendered": object()})
+    with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
+               return_value=_result(BridgeStatus.PENDING, gate_id="gate-rendered")), \
+         patch("agentic_fieldbook.plugins.hitl_gate._gate_message", return_value=rendered):
+        result = _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/x"},
+                                   task_id="call-1", bridge=bridge)
+    assert result == {"action": "block", "message": "HITL gate blocked: gate presentation failed"}
+    assert not _PENDING_NATIVE_REQUESTS
+    assert not _GATE_REQUEST_KEYS
+    assert not _NATIVE_APPROVAL_BRIDGES
+    assert not bridge._pending
+
+
 @pytest.mark.parametrize("config", [object(), {"plugins": []}])
 def test_hook_fail_open_on_malformed_config(monkeypatch, config):
     monkeypatch.delenv("HITL_GATE_ENABLED", raising=False)

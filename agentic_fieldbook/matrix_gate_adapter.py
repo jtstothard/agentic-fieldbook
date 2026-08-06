@@ -447,35 +447,49 @@ def _now_utc_iso() -> str:
 
 
 def _event_value(event: object, *names: str) -> str:
+    """Read string fields from mappings and typed Matrix gateway events."""
     for name in names:
         value = getattr(event, name, None)
         if value is None and isinstance(event, dict):
             value = event.get(name)
-        if isinstance(value, str) and value:
+        if isinstance(value, str) and value.strip():
             return value
     return ""
 
 
+def _relation_value(relation: object, *names: str) -> str:
+    """Read fields from mautrix relation objects and mapping-shaped events."""
+    for name in names:
+        value = getattr(relation, name, None)
+        if value is None and isinstance(relation, dict):
+            value = relation.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _nested_relation(content: object) -> object | None:
+    if isinstance(content, dict):
+        return content.get("m.relates_to") or content.get("relates_to")
+    return getattr(content, "m_relates_to", None) or getattr(content, "relates_to", None)
+
+
 def _reaction_relation(event: object) -> dict[str, str]:
-    """Normalize mautrix, gateway, and test event relation shapes."""
+    """Normalize typed mautrix/gateway and mapping reaction event shapes."""
     relation = getattr(event, "relates_to", None)
     if relation is None and isinstance(event, dict):
-        relation = event.get("relates_to")
-        content = event.get("content")
-        if relation is None and isinstance(content, dict):
-            relation = content.get("m.relates_to") or content.get("relates_to")
+        relation = event.get("m.relates_to") or event.get("relates_to")
+        if relation is None:
+            relation = _nested_relation(event.get("content"))
     if relation is None:
-        content = getattr(event, "content", None)
-        if isinstance(content, dict):
-            relation = content.get("m.relates_to") or content.get("relates_to")
-    if not isinstance(relation, dict):
+        relation = _nested_relation(getattr(event, "content", None))
+    if relation is None:
         return {}
-    normalized = {
-        "rel_type": str(relation.get("rel_type") or relation.get("relType") or ""),
-        "event_id": str(relation.get("event_id") or relation.get("eventId") or ""),
-        "key": str(relation.get("key") or ""),
+    return {
+        "rel_type": _relation_value(relation, "rel_type", "relType"),
+        "event_id": _relation_value(relation, "event_id", "eventId"),
+        "key": _relation_value(relation, "key"),
     }
-    return normalized
 
 
 def _malformed_request() -> LightGateRequest:

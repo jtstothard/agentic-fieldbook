@@ -274,6 +274,35 @@ class TestRecordDecision:
         assert decision is not None
         assert decision.outcome is LightGateOutcome.REJECTED
 
+    def test_typed_mautrix_reaction_event_binds_to_prompt_event(self):
+        """The live gateway shape uses typed event and relation objects."""
+        from types import SimpleNamespace
+
+        adapter, _ = make_adapter()
+        request = adapter.create_request(**make_inputs())
+        adapter.present(request.gate_id)
+        event = SimpleNamespace(
+            type="m.reaction",
+            event_id="$typed-reaction",
+            sender="@jay:example",
+            room_id=ROOM,
+            content=SimpleNamespace(
+                relates_to=SimpleNamespace(
+                    rel_type="m.annotation",
+                    event_id=adapter.get_matrix_event_id(request.gate_id),
+                    key="✅",
+                ),
+            ),
+        )
+        decision = adapter.process_reaction(event)
+        assert decision is not None
+        assert decision.outcome is LightGateOutcome.APPROVED
+
+    @pytest.mark.parametrize("event", [None, object(), {"type": "m.reaction"}])
+    def test_malformed_or_empty_reaction_event_is_ignored(self, event):
+        adapter, _ = make_adapter()
+        assert adapter.process_reaction(event) is None
+
     @pytest.mark.parametrize("event_id", [None, "", "   "])
     def test_reaction_without_event_id_is_ignored(self, event_id):
         adapter, _ = make_adapter()

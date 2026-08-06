@@ -426,8 +426,11 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
             namespace = _context_namespace(kwargs, bridge)
             _queue_native_request(gate_id, bridge, command, identity, namespace)
             message = _gate_message(task, gate_id)
-            if not isinstance(message, str):
-                return None
+            if not isinstance(message, str) or not message.strip():
+                return {
+                    "action": "block",
+                    "message": "HITL gate blocked: gate presentation failed",
+                }
             preserve_request = True
             return {"action": "approve", "message": message}
         if status == "abort":
