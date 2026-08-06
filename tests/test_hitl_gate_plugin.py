@@ -93,12 +93,34 @@ def _result(status: BridgeStatus, task_id: str = "call-1", **kwargs):
     return BridgeResult(status, task_id, **kwargs)
 
 
-@pytest.mark.parametrize("status", [BridgeStatus.PROCEED, BridgeStatus.FALLBACK])
-def test_hook_passes_through_proceed_and_fallback(monkeypatch, status):
+def test_hook_passes_through_proceed(monkeypatch):
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
     with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
-               return_value=_result(status)):
+               return_value=_result(BridgeStatus.PROCEED)):
         assert _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/x"}, task_id="call-1") is None
+
+
+def test_hook_blocks_when_bridge_construction_degrades(monkeypatch):
+    """A missing live bridge cannot authorize a destructive command."""
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    result = _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/hitl"}, task_id="call-1")
+    assert result == {
+        "action": "block",
+        "message": "HITL gate blocked: destructive gate unavailable (gate_bridge_unavailable)",
+    }
+
+
+def test_hook_blocks_when_bridge_persistence_degrades(monkeypatch):
+    """A bridge FALLBACK is degradation, not permission to execute."""
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
+               return_value=_result(BridgeStatus.FALLBACK,
+                                     reason="gate_bridge_unavailable")):
+        result = _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/hitl"}, task_id="call-1")
+    assert result == {
+        "action": "block",
+        "message": "HITL gate blocked: destructive gate unavailable (gate_bridge_unavailable)",
+    }
 
 
 def test_hook_translates_pending_to_approval(monkeypatch):
@@ -397,14 +419,16 @@ def test_registered_hook_routes_destructive_call_to_live_gate(monkeypatch, tmp_p
     assert context.hitl_gate_bridge.is_pending_for(gate_id, "call-1")
 
 
-def test_registered_hook_fails_open_to_passthrough_without_live_matrix(monkeypatch):
+def test_registered_hook_blocks_without_live_matrix(monkeypatch):
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
     monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example")
     callbacks = {}
     context = SimpleNamespace(adapters={},
                               register_hook=lambda name, callback: callbacks.update({name: callback}))
     register(context)
-    assert callbacks["pre_tool_call"]("terminal", {"command": "rm -rf /tmp/x"}, task_id="call-1") is None
+    result = callbacks["pre_tool_call"]("terminal", {"command": "rm -rf /tmp/x"}, task_id="call-1")
+    assert result["action"] == "block"
+    assert "destructive gate unavailable" in result["message"]
 
 
 def test_live_bridge_routes_non_destructive_always_ask_to_telegram(monkeypatch, tmp_path):
