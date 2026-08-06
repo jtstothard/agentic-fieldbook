@@ -379,9 +379,12 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
             from tools.approval import resolve_gateway_approval
             choice = "once" if status == "proceed" else "deny"
             resolved = resolve_gateway_approval(session_key, choice)
+            if not resolved:
+                # Keep the native association and inbound event unseen so a
+                # transient/failed native resolution can retry the same event.
+                _LOG.warning("Native /gate decision was not resolved for %s", gate_id)
+                return {"action": "skip", "reason": "native approval unresolved"}
             _forget_native_approval(gate_id, namespace)
-            if resolved == 0:
-                _LOG.info("Stale /gate decision ignored for %s", gate_id)
         if isinstance(event_id, str) and event_id:
             with _PENDING_LOCK:
                 if len(_SEEN_GATE_EVENTS_ORDER) >= 4096:

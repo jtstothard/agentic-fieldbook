@@ -548,6 +548,51 @@ def test_round_trip_reject_raw_string(_round_trip):
     assert reply.outcome == "rejected"
 
 
+def test_round_trip_reaction_record_failure_is_retryable(tmp_path):
+    """A durable learning failure must not consume the Matrix reaction."""
+    from datetime import timedelta
+
+    from agentic_fieldbook.gate_bridge import FieldbookGateBridge, SQLiteLearningStore
+    from agentic_fieldbook.matrix_gate_adapter import MatrixGateAdapter
+
+    store = SQLiteLearningStore(tmp_path / "reaction-retry.sqlite")
+    original_record = store.record_resolution
+    attempts = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("durable store unavailable")
+        return original_record(*args, **kwargs)
+
+    store.record_resolution = fail_once
+    transport = _FakeReplyTransport()
+    adapter = MatrixGateAdapter(
+        transport, "!room:test", validity_window=timedelta(seconds=300),
+        allowed_senders={"@jay:example"},
+    )
+    bridge = FieldbookGateBridge(
+        learning_store=store, gate_adapter=adapter, fallback=lambda _task: None,
+        enabled=True, destructive_allowlist=("rm-rf",),
+    )
+    task = _make_destructive_task("reaction-retry")
+    pending = bridge.evaluate_and_maybe_gate(task)
+    event = {
+        "event_type": "m.reaction", "event_id": "$reaction-retry",
+        "text": "", "sender": "@jay:example", "room_id": "!room:test",
+        "relates_to": {"rel_type": "m.annotation",
+            "event_id": adapter.get_matrix_event_id(pending.gate_id), "key": "✅"},
+    }
+
+    assert bridge.process_reply(event) is None
+    retry = bridge.process_reply(event)
+
+    assert retry is not None
+    assert retry.status is BridgeStatus.PROCEED
+    assert attempts == 2
+
+
 def test_round_trip_expiry(_round_trip):
     """an expired gate resolves to ABORT with outcome=expired."""
     from datetime import datetime, timezone
@@ -927,6 +972,29 @@ def test_reaction_approval_resolves_native_approval(monkeypatch):
         result = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
     assert result["reason"] == "hitl gate proceed"
     resolve.assert_called_once_with("session-reaction", "once")
+
+
+def test_reaction_native_resolution_failure_is_retryable(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    gate_id = "gate-reaction-retry"
+    _remember_native_approval(gate_id, "session-reaction-retry")
+    bridge = SimpleNamespace(
+        process_reply=lambda message: _result(BridgeStatus.PROCEED, "call-1", gate_id=gate_id)
+    )
+    event = _GateEvent("", event_id="$reaction-retry", event_type="m.reaction",
+                       relates_to={"rel_type": "m.annotation", "event_id": "$prompt", "key": "✅"})
+    with patch("tools.approval.resolve_gateway_approval", side_effect=[0, 1]) as resolve:
+        first = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+        assert first["reason"] == "native approval unresolved"
+        assert "$reaction-retry" not in _SEEN_GATE_EVENTS
+
+        second = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+
+    assert second["reason"] == "hitl gate proceed"
+    assert _native_session_for_gate(gate_id) is None
+    assert "$reaction-retry" in _SEEN_GATE_EVENTS
+    assert resolve.call_count == 2
 
 
 def test_reaction_unauthorized_wrong_room_and_replay_are_ignored(monkeypatch):

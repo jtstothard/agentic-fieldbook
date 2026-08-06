@@ -439,6 +439,7 @@ class MatrixGateAdapter(LightGateAdapter):
 
     def process_reaction(
         self, message: object, subject_ref: str = "",
+        on_resolution: Callable[[LightGateDecision], None] | None = None,
     ) -> LightGateDecision | None:
         """Resolve only an exact reaction annotation on the pending prompt.
 
@@ -500,6 +501,19 @@ class MatrixGateAdapter(LightGateAdapter):
                 self._reaction_gate_ids.pop(event_id, None)
                 self._resolution_reservations.discard(gate_id)
             return None
+
+        # The bridge owns durable learning.  Run it while both reservations
+        # are held so a persistence failure can release them without consuming
+        # the Matrix event.
+        if on_resolution is not None:
+            try:
+                on_resolution(decision)
+            except Exception:
+                with self._lock:
+                    self._reaction_reservations.discard(event_id)
+                    self._reaction_gate_ids.pop(event_id, None)
+                    self._resolution_reservations.discard(gate_id)
+                return None
 
         value = getattr(getattr(decision, "outcome", None), "value", None)
         with self._lock:

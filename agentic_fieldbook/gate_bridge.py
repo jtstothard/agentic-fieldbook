@@ -326,7 +326,19 @@ class FieldbookGateBridge:
                     processor = getattr(self.gate_adapter, "process_reaction", None)
                     if not callable(processor):
                         return None
-                    result = processor(message, subject_ref)
+                    def persist_reaction(decision: LightGateDecision) -> None:
+                        reaction_task = self._pending.get(getattr(decision, "gate_id", ""))
+                        if reaction_task is None:
+                            raise RuntimeError("reaction has no pending task")
+                        if getattr(getattr(decision, "outcome", None), "value", None) not in {"expired", "revoked"}:
+                            self.learning_store.record_resolution(
+                                reaction_task.action_class, reaction_task.fork_description,
+                                str(getattr(getattr(decision, "outcome", None), "value", "")),
+                                str(getattr(decision, "chosen_option", "") or ""),
+                                str(getattr(decision, "subject_ref", "") or "unknown"),
+                                reaction_task.task_id, reaction_task.contract_digest,
+                            )
+                    result = processor(message, subject_ref, on_resolution=persist_reaction)
                 else:
                     result = self.gate_adapter.process_reply(raw_text, subject_ref)
                 if result is None:
@@ -346,7 +358,7 @@ class FieldbookGateBridge:
                 # Persist before retiring the in-memory request.  If durable
                 # learning fails, the exception leaves _pending intact so a
                 # retried Matrix event can be processed again.
-                if value not in {"expired", "revoked"}:
+                if value not in {"expired", "revoked"} and not _is_matrix_reaction(message):
                     self.learning_store.record_resolution(
                         task.action_class, task.fork_description, str(value),
                         str(getattr(result, "chosen_option", "") or ""),
