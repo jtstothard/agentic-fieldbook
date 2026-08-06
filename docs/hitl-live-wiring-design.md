@@ -235,7 +235,7 @@ if not result.success:
 return result.message_id or ""
 ```
 
-Inbound `/gate` messages should be delivered by the gateway's existing Matrix message event handler to `bridge.process_reply(text, sender, event_id, room_id)`. The bridge filters to the configured gate room and accepted sender policy, then delegates parsing to `MatrixGateAdapter.process_reply`. There is no `receive()` call in the live wrapper; a test transport may expose one for deterministic tests.
+Inbound Matrix events should be delivered by the gateway's existing Matrix event handler to the bridge. Text events retain the `/gate approve|reject|pick` fallback. Reaction events are accepted only as native Matrix `m.reaction` annotations whose `m.relates_to.event_id` exactly matches the outbound gate prompt event ID returned by `present()`: `✅` selects the recommended option and `❌` rejects. The adapter also checks the configured room and pending gate state; arbitrary emoji text, reactions to unrelated messages, stale events, and replayed event IDs are ignored. There is no `receive()` call in the live wrapper; a test transport may expose one for deterministic tests.
 
 ### Room and sender safety
 
@@ -250,7 +250,7 @@ Inbound `/gate` messages should be delivered by the gateway's existing Matrix me
 1. Router builds a JSON-shaped `RouterTask` and calls the lazy bridge.
 2. Bridge evaluates the task and constructs a `CanonicalTaskRecord`/`TaskContract` when an always-ask class is present.
 3. For a gate disposition, bridge creates the Fieldbook request with a stable idempotency key and presents it through the injected live Matrix adapter.
-4. Gateway routes the incoming Matrix event to the bridge; the bridge validates sender/room, parses `/gate approve|reject|pick`, records the resolution in SQLite, and returns the translated result.
+4. Gateway routes incoming Matrix events to the bridge. `/gate approve|reject|pick` remains the text fallback; `m.reaction` events must be authorized, in the configured room, and bound by exact `m.relates_to.event_id` to the pending prompt before `✅`/`❌` can resolve it.
 5. Router resumes only the same task and approval epoch for `proceed`; otherwise it aborts/reports.
 6. Any unavailable component invokes the Telegram compatibility path and records structured degradation telemetry.
 

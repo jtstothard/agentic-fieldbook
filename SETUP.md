@@ -1,5 +1,10 @@
 # Agentic Fieldbook setup
 
+## Matrix HITL approvals
+
+- Text fallback: `/gate approve <id>`, `/gate reject <id>`, or `/gate pick <index> <id>`.
+- Reaction approval: react `✅` or `❌` directly to the exact gate prompt event. Only the configured room and authorized sender are accepted; reactions must be native `m.reaction` events with an exact `m.relates_to.event_id` binding. Emoji in ordinary text is ignored.
+
 ## v0.1 Installation (Plugin stub)
 
 ### Quick install

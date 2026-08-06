@@ -1,8 +1,9 @@
 """Hermes ``pre_tool_call`` adapter for the Fieldbook HITL bridge.
 
-The plugin is deliberately fail-open at the integration seam: bridge
-availability failures return ``None`` so Hermes' existing approval path remains
-responsible for the call.  A configured bridge may still return ``ABORT``,
+Bridge availability failures before a destructive gate is required return
+``None`` so Hermes' existing approval path remains responsible for the call.
+Once a destructive gate has been required, failures are fail-closed and return
+an explicit block directive.  A configured bridge may still return ``ABORT``,
 which is translated into a veto.
 """
 from __future__ import annotations
@@ -325,16 +326,22 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
         text = getattr(event, "text", None)
         source = getattr(event, "source", None)
         platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None))
-        room_id = getattr(source, "chat_id", None)
+        room_id = getattr(source, "chat_id", None) or getattr(event, "room_id", None)
         gate_room = effective_matrix_room()
         if str(platform).lower() != "matrix" or not gate_room or room_id != gate_room:
             return None
 
+        event_type = getattr(event, "event_type", None) or getattr(event, "type", None)
+        is_reaction = event_type in {"m.reaction", "reaction"}
         # Gate rooms are notification/control rooms, never ordinary agent input.
-        if not isinstance(text, str) or not text.lstrip().startswith("/gate"):
+        if not is_reaction and (not isinstance(text, str) or not text.lstrip().startswith("/gate")):
             return {"action": "skip", "reason": "hitl gate room is notification-only"}
-        sender = getattr(source, "user_id", None) or getattr(source, "user_id_alt", None)
+        sender = getattr(source, "user_id", None) or getattr(source, "user_id_alt", None) or getattr(event, "sender", None)
         event_id = getattr(event, "message_id", None) or getattr(event, "event_id", None)
+        event_namespace = getattr(event, "context_namespace", None)
+        requested_namespace = kwargs.get("context_namespace")
+        if event_namespace and requested_namespace and event_namespace != requested_namespace:
+            return {"action": "skip", "reason": "wrong hitl gate namespace"}
         if isinstance(event_id, str) and event_id:
             with _PENDING_LOCK:
                 if event_id in _SEEN_GATE_EVENTS:
@@ -347,7 +354,18 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
         bridge = _bridge_from_context(context) if context is not None else None
         if bridge is None:
             return {"action": "skip", "reason": "hitl gate bridge unavailable"}
-        result = bridge.process_reply({"text": text, "sender": sender})
+        result = bridge.process_reply(
+            {
+                "text": text if isinstance(text, str) else "",
+                "sender": sender,
+                "event_id": event_id or "",
+                "room_id": room_id,
+                "event_type": event_type or "m.room.message",
+                "content": getattr(event, "content", None),
+                "relates_to": getattr(event, "relates_to", None),
+                "context_namespace": requested_namespace or "",
+            }
+        )
         if result is None:
             # ``None`` also represents a bridge exception/unavailability. Do
             # not retire the transport event in that case: Matrix may retry
@@ -361,9 +379,15 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
             from tools.approval import resolve_gateway_approval
             choice = "once" if status == "proceed" else "deny"
             resolved = resolve_gateway_approval(session_key, choice)
+            if not resolved:
+                # Keep the native association and inbound event unseen so a
+                # transient/failed native resolution can retry the same event.
+                _LOG.warning("Native /gate decision was not resolved for %s", gate_id)
+                return {"action": "skip", "reason": "native approval unresolved"}
+            finalize = getattr(bridge, "finalize_resolution", None)
+            if callable(finalize):
+                finalize(gate_id)
             _forget_native_approval(gate_id, namespace)
-            if resolved == 0:
-                _LOG.info("Stale /gate decision ignored for %s", gate_id)
         if isinstance(event_id, str) and event_id:
             with _PENDING_LOCK:
                 if len(_SEEN_GATE_EVENTS_ORDER) >= 4096:
@@ -408,8 +432,11 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
             namespace = _context_namespace(kwargs, bridge)
             _queue_native_request(gate_id, bridge, command, identity, namespace)
             message = _gate_message(task, gate_id)
-            if not isinstance(message, str):
-                return None
+            if not isinstance(message, str) or not message.strip():
+                return {
+                    "action": "block",
+                    "message": "HITL gate blocked: gate presentation failed",
+                }
             preserve_request = True
             return {"action": "approve", "message": message}
         if status == "abort":
@@ -417,6 +444,9 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
             return {"action": "block", "message": f"HITL gate blocked destructive action: {reason}"} if isinstance(reason, str) else None
         return None
     except Exception:
+        if gate_id:
+            _LOG.warning("HITL destructive gate failed closed", exc_info=True)
+            return {"action": "block", "message": "HITL gate blocked: gate handling failed"}
         return None
     finally:
         if not preserve_request and gate_id:

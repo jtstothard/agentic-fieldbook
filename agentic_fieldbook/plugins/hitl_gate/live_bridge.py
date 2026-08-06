@@ -105,6 +105,7 @@ def build_live_bridge(context: Any) -> Any:
     from ...gate_bridge import FieldbookGateBridge, SQLiteLearningStore
     from ...matrix_gate_adapter import MatrixGateAdapter
     from ...matrix_transport import transport_from_gateway
+    from . import _authorized_sender
 
     room_id = effective_matrix_room()
     if not room_id:
@@ -118,7 +119,11 @@ def build_live_bridge(context: Any) -> Any:
     except Exception:
         pass
     gateway_loop = getattr(runner, "_gateway_loop", None)
-    gate_adapter = MatrixGateAdapter(_SynchronousMatrixTransport(transport, gateway_loop), room_id)
+    gate_adapter = MatrixGateAdapter(
+        _SynchronousMatrixTransport(transport, gateway_loop),
+        room_id,
+        authorize_sender=_authorized_sender,
+    )
     return FieldbookGateBridge(
         learning_store=SQLiteLearningStore(_state_path()),
         gate_adapter=gate_adapter,

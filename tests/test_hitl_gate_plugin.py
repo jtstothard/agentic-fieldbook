@@ -269,8 +269,8 @@ def test_destroy_with_managed_object_still_matches(command):
     assert match.action_class == "destroy"
 
 
-def test_hook_fail_open_on_rendering_exception(monkeypatch):
-    """R1 MEDIUM: _gate_message raising must return None (fail-open), not escape."""
+def test_hook_fails_closed_on_rendering_exception(monkeypatch):
+    """A required destructive gate must block if rendering it fails."""
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
     bridge = SimpleNamespace(is_pending_for=lambda _gate_id, _task_id: True,
                              _pending={"gate-render": object()})
@@ -280,7 +280,25 @@ def test_hook_fail_open_on_rendering_exception(monkeypatch):
                side_effect=ValueError("malformed task")):
         result = _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/x"},
                                    task_id="call-1", bridge=bridge)
-    assert result is None
+    assert result == {"action": "block", "message": "HITL gate blocked: gate handling failed"}
+    assert not _PENDING_NATIVE_REQUESTS
+    assert not _GATE_REQUEST_KEYS
+    assert not _NATIVE_APPROVAL_BRIDGES
+    assert not bridge._pending
+
+
+@pytest.mark.parametrize("rendered", [None, "", 42])
+def test_hook_fails_closed_on_non_presented_gate_message(monkeypatch, rendered):
+    """A required gate never passes through without a usable presentation."""
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    bridge = SimpleNamespace(is_pending_for=lambda _gate_id, _task_id: True,
+                             _pending={"gate-rendered": object()})
+    with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
+               return_value=_result(BridgeStatus.PENDING, gate_id="gate-rendered")), \
+         patch("agentic_fieldbook.plugins.hitl_gate._gate_message", return_value=rendered):
+        result = _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/x"},
+                                   task_id="call-1", bridge=bridge)
+    assert result == {"action": "block", "message": "HITL gate blocked: gate presentation failed"}
     assert not _PENDING_NATIVE_REQUESTS
     assert not _GATE_REQUEST_KEYS
     assert not _NATIVE_APPROVAL_BRIDGES
@@ -462,7 +480,8 @@ def _build_round_trip_bridge(tmp_path, *, transport_fail: bool = False, enabled:
     transport = _FakeReplyTransport(fail=transport_fail)
     fallback_calls: list = []
     adapter = MatrixGateAdapter(
-        transport, "!room:test", validity_window=timedelta(seconds=300)
+        transport, "!room:test", validity_window=timedelta(seconds=300),
+        allowed_senders={"@jay:example"},
     )
     bridge = FieldbookGateBridge(
         learning_store=store,
@@ -527,6 +546,51 @@ def test_round_trip_reject_raw_string(_round_trip):
     assert reply is not None
     assert reply.status is BridgeStatus.ABORT
     assert reply.outcome == "rejected"
+
+
+def test_round_trip_reaction_record_failure_is_retryable(tmp_path):
+    """A durable learning failure must not consume the Matrix reaction."""
+    from datetime import timedelta
+
+    from agentic_fieldbook.gate_bridge import FieldbookGateBridge, SQLiteLearningStore
+    from agentic_fieldbook.matrix_gate_adapter import MatrixGateAdapter
+
+    store = SQLiteLearningStore(tmp_path / "reaction-retry.sqlite")
+    original_record = store.record_resolution
+    attempts = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("durable store unavailable")
+        return original_record(*args, **kwargs)
+
+    store.record_resolution = fail_once
+    transport = _FakeReplyTransport()
+    adapter = MatrixGateAdapter(
+        transport, "!room:test", validity_window=timedelta(seconds=300),
+        allowed_senders={"@jay:example"},
+    )
+    bridge = FieldbookGateBridge(
+        learning_store=store, gate_adapter=adapter, fallback=lambda _task: None,
+        enabled=True, destructive_allowlist=("rm-rf",),
+    )
+    task = _make_destructive_task("reaction-retry")
+    pending = bridge.evaluate_and_maybe_gate(task)
+    event = {
+        "event_type": "m.reaction", "event_id": "$reaction-retry",
+        "text": "", "sender": "@jay:example", "room_id": "!room:test",
+        "relates_to": {"rel_type": "m.annotation",
+            "event_id": adapter.get_matrix_event_id(pending.gate_id), "key": "✅"},
+    }
+
+    assert bridge.process_reply(event) is None
+    retry = bridge.process_reply(event)
+
+    assert retry is not None
+    assert retry.status is BridgeStatus.PROCEED
+    assert attempts == 2
 
 
 def test_round_trip_expiry(_round_trip):
@@ -808,9 +872,14 @@ def test_hook_fires_approve_via_gateway_runner_ref(monkeypatch, tmp_path):
 
 
 class _GateEvent:
-    def __init__(self, text, room="!gate:example", sender="@jay:example", event_id=None):
+    def __init__(self, text, room="!gate:example", sender="@jay:example", event_id=None,
+                 event_type="m.room.message", relates_to=None, content=None, namespace=None):
         self.text = text
         self.message_id = event_id
+        self.event_type = event_type
+        self.relates_to = relates_to
+        self.content = content
+        self.context_namespace = namespace
         self.source = SimpleNamespace(
             platform=SimpleNamespace(value="matrix"),
             chat_id=room,
@@ -887,6 +956,114 @@ def test_gate_room_reject_resolves_native_deny(monkeypatch):
     with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
         _on_pre_gateway_dispatch(_GateEvent(f"/gate reject {gate_id}"), gateway=SimpleNamespace(hitl_gate_bridge=bridge))
     resolve.assert_called_once_with("session-2", "deny")
+
+
+def test_reaction_approval_resolves_native_approval(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    gate_id = "gate-reaction"
+    _remember_native_approval(gate_id, "session-reaction")
+    bridge = SimpleNamespace(
+        process_reply=lambda message: _result(BridgeStatus.PROCEED, "call-1", gate_id=gate_id)
+    )
+    event = _GateEvent("", event_id="$reaction", event_type="m.reaction",
+                       relates_to={"rel_type": "m.annotation", "event_id": "$prompt", "key": "✅"})
+    with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        result = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    assert result["reason"] == "hitl gate proceed"
+    resolve.assert_called_once_with("session-reaction", "once")
+
+
+def test_reaction_native_resolution_failure_is_retryable(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    gate_id = "gate-reaction-retry"
+    _remember_native_approval(gate_id, "session-reaction-retry")
+    bridge = SimpleNamespace(
+        process_reply=lambda message: _result(BridgeStatus.PROCEED, "call-1", gate_id=gate_id)
+    )
+    event = _GateEvent("", event_id="$reaction-retry", event_type="m.reaction",
+                       relates_to={"rel_type": "m.annotation", "event_id": "$prompt", "key": "✅"})
+    with patch("tools.approval.resolve_gateway_approval", side_effect=[0, 1]) as resolve:
+        first = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+        assert first["reason"] == "native approval unresolved"
+        assert "$reaction-retry" not in _SEEN_GATE_EVENTS
+
+        second = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+
+    assert second["reason"] == "hitl gate proceed"
+    assert _native_session_for_gate(gate_id) is None
+    assert "$reaction-retry" in _SEEN_GATE_EVENTS
+    assert resolve.call_count == 2
+
+
+def test_real_bridge_reaction_native_retry_cleans_up_without_duplicate_learning(tmp_path, monkeypatch):
+    """The real bridge path retries native resolution and records learning once."""
+    import sqlite3
+    from datetime import timedelta
+    from agentic_fieldbook.gate_bridge import FieldbookGateBridge, SQLiteLearningStore
+    from agentic_fieldbook.matrix_gate_adapter import MatrixGateAdapter
+
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!room:test")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    store = SQLiteLearningStore(tmp_path / "native-retry.sqlite")
+    transport = _FakeReplyTransport()
+    adapter = MatrixGateAdapter(transport, "!room:test", validity_window=timedelta(minutes=5),
+                                allowed_senders={"@jay:example"})
+    bridge = FieldbookGateBridge(learning_store=store, gate_adapter=adapter,
+                                 fallback=lambda _task: None, enabled=True,
+                                 destructive_allowlist=("rm-rf",))
+    task = _make_destructive_task("native-retry-real")
+    pending = bridge.evaluate_and_maybe_gate(task)
+    _remember_native_approval(pending.gate_id, "native-real-session", bridge)
+    event = _GateEvent("", room="!room:test", event_id="$native-real-reaction",
+                       event_type="m.reaction", relates_to={
+                           "rel_type": "m.annotation",
+                           "event_id": adapter.get_matrix_event_id(pending.gate_id),
+                           "key": "✅"})
+
+    with patch("tools.approval.resolve_gateway_approval", side_effect=[0, 1]) as resolve:
+        first = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+        assert first["reason"] == "native approval unresolved"
+        assert bridge.is_pending_for(pending.gate_id, task.task_id)
+        second = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+
+    assert second["reason"] == "hitl gate proceed"
+    assert resolve.call_count == 2
+    assert not bridge.is_pending_for(pending.gate_id, task.task_id)
+    assert _native_session_for_gate(pending.gate_id) is None
+    with sqlite3.connect(tmp_path / "native-retry.sqlite") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM resolution_events").fetchone()[0] == 1
+
+
+def test_reaction_unauthorized_wrong_room_and_replay_are_ignored(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    calls = []
+    bridge = SimpleNamespace(process_reply=lambda message: calls.append(message) or _result(
+        BridgeStatus.FALLBACK, "call-1", gate_id="gate-reaction-safe"))
+    base = dict(event_type="m.reaction", event_id="$reaction-safe",
+                relates_to={"rel_type": "m.annotation", "event_id": "$prompt", "key": "❌"})
+    assert _on_pre_gateway_dispatch(_GateEvent("", sender="@intruder:example", **base), gateway=SimpleNamespace(hitl_gate_bridge=bridge))["action"] == "skip"
+    assert _on_pre_gateway_dispatch(_GateEvent("", room="!other:example", **base)) is None
+    first = _on_pre_gateway_dispatch(_GateEvent("", **base), gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    second = _on_pre_gateway_dispatch(_GateEvent("", **base), gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    assert first["reason"] == "hitl gate fallback"
+    assert second["reason"] == "replayed hitl gate event"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("key", ["👍", "✅"])
+def test_reaction_namespace_mismatch_or_unrelated_shape_does_not_resolve(monkeypatch, key):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    bridge = SimpleNamespace(process_reply=pytest.fail)
+    event = _GateEvent("", event_id="$bad-shape", event_type="m.reaction",
+                       namespace="other", relates_to={"rel_type": "m.annotation",
+                       "event_id": "$unrelated", "key": key})
+    result = _on_pre_gateway_dispatch(event, context_namespace="current",
+                                      gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    assert result["action"] == "skip"
 
 
 @pytest.mark.parametrize("sender", ["@intruder:example", None])
@@ -1175,10 +1352,11 @@ def test_failed_gate_message_does_not_leak_thread_association(monkeypatch):
         "agentic_fieldbook.plugins.hitl_gate._gate_message",
         side_effect=RuntimeError("render failed"),
     ):
-        assert _on_pre_tool_call(
+        result = _on_pre_tool_call(
             "terminal", {"command": "DROP TABLE users"}, task_id="call-1",
             bridge=bridge,
-        ) is None
+        )
+    assert result == {"action": "block", "message": "HITL gate blocked: gate handling failed"}
     assert not hasattr(_GATE_THREAD_STATE, "gate_id")
 
 

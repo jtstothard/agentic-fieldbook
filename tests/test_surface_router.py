@@ -98,7 +98,7 @@ class FakeHAAdapter:
 
 def make_matrix_adapter() -> tuple[MatrixGateAdapter, FakeTransport]:
     transport = FakeTransport()
-    return MatrixGateAdapter(transport, ROOM), transport
+    return MatrixGateAdapter(transport, ROOM, allowed_senders={"@jay:example"}), transport
 
 
 def make_router(

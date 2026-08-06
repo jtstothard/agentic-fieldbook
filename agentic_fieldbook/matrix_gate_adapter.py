@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 import threading
 import uuid
+from collections.abc import Iterable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, runtime_checkable
@@ -76,6 +77,10 @@ class MatrixMessage:
     event_id: str
     sender: str
     text: str
+    room_id: str = ""
+    event_type: str = "m.room.message"
+    relates_to: dict[str, str] | None = None
+    context_namespace: str = ""
 
 
 @runtime_checkable
@@ -182,15 +187,29 @@ class MatrixGateAdapter(LightGateAdapter):
         control_room: str,
         *,
         validity_window: timedelta = timedelta(minutes=5),
+        allowed_senders: Iterable[str] = (),
+        authorize_sender: Callable[[str], bool] | None = None,
     ) -> None:
         self._transport = transport
         self._room = control_room
         self._validity_window = validity_window
+        configured_senders = frozenset(
+            sender.strip() for sender in allowed_senders
+            if isinstance(sender, str) and sender.strip()
+        )
+        if not configured_senders and not callable(authorize_sender):
+            raise ValueError("Matrix reaction authorization requires allowed_senders or authorize_sender")
+        self._allowed_senders = configured_senders
+        self._authorize_sender = authorize_sender
 
         self._requests: dict[str, LightGateRequest] = {}
         self._by_key: dict[str, str] = {}              # idempotency_key → gate_id
         self._event_ids: dict[str, str] = {}           # gate_id → matrix event_id
         self._revoked: set[str] = set()
+        self._reaction_events: set[str] = set()
+        self._reaction_gate_ids: dict[str, str] = {}
+        self._reaction_reservations: set[str] = set()
+        self._resolution_reservations: set[str] = set()
         self._namespace = uuid.uuid4().hex[:12]
         self._counter = 0
         self._lock = threading.Lock()
@@ -272,6 +291,35 @@ class MatrixGateAdapter(LightGateAdapter):
         # Matrix control rooms need an addressable gate identity and commands.
         body = render_gate_control_message(request)
         event_id = self._transport.send(self._room, body)
+        if not isinstance(event_id, str) or not event_id.strip():
+            # A transport that does not return a usable event ID cannot bind
+            # reactions to this exact prompt.  Remove the whole failed request
+            # atomically so the idempotency key can create a clean retry.
+            with self._lock:
+                request = self._requests.pop(gate_id, None)
+                if request is not None and self._by_key.get(request.idempotency_key) == gate_id:
+                    self._by_key.pop(request.idempotency_key, None)
+                self._event_ids.pop(gate_id, None)
+                self._revoked.discard(gate_id)
+                self._resolution_reservations.discard(gate_id)
+                stale_reactions = [
+                    reaction for reaction, gate in self._reaction_gate_ids.items()
+                    if gate == gate_id
+                ]
+                for reaction in stale_reactions:
+                    self._reaction_gate_ids.pop(reaction, None)
+                    self._reaction_events.discard(reaction)
+                    self._reaction_reservations.discard(reaction)
+            return LightGatePresentation(
+                LightGateOutcome.MALFORMED,
+                gate_id,
+                "",
+                "",
+                (),
+                "",
+                "",
+                reason="transport returned no usable event id",
+            )
         self._event_ids[gate_id] = event_id
 
         return LightGatePresentation(
@@ -380,6 +428,103 @@ class MatrixGateAdapter(LightGateAdapter):
 
         return self.record_decision(parsed.gate_id, chosen, subject_ref)
 
+    def _sender_is_authorized(self, sender: str) -> bool:
+        """Check the configured adapter-level reaction authorization policy."""
+        if self._authorize_sender is not None:
+            try:
+                return self._authorize_sender(sender) is True
+            except Exception:
+                return False
+        return sender in self._allowed_senders
+
+    def process_reaction(
+        self, message: object, subject_ref: str = "",
+        on_resolution: Callable[[LightGateDecision], None] | None = None,
+    ) -> LightGateDecision | None:
+        """Resolve only an exact reaction annotation on the pending prompt.
+
+        Matrix reaction events are deliberately separate from text commands:
+        the key must be exactly ``✅`` or ``❌`` and ``m.relates_to.event_id``
+        must be the event ID returned by :meth:`present` for a still-pending
+        gate.  Arbitrary emoji text and annotations on other messages are not
+        approval signals.
+        """
+        event_id = _event_value(message, "event_id", "message_id")
+        sender = _event_value(message, "sender", "user_id")
+        room_id = _event_value(message, "room_id", "chat_id")
+        event_type = _event_value(message, "event_type", "type")
+        relation = _reaction_relation(message)
+        if (
+            not isinstance(event_id, str)
+            or not event_id.strip()
+            or not isinstance(sender, str)
+            or not sender.strip()
+            or not isinstance(room_id, str)
+            or not room_id.strip()
+            or event_type not in {"m.reaction", "reaction"}
+            or not relation
+        ):
+            return None
+        if room_id != self._room or not self._sender_is_authorized(sender):
+            return None
+        if relation.get("rel_type") not in {"m.annotation", "annotation"}:
+            return None
+        prompt_event_id = relation.get("event_id", "")
+        key = relation.get("key", "")
+        if key not in {"✅", "❌"} or not prompt_event_id:
+            return None
+        if room_id and room_id != self._room:
+            return None
+        with self._lock:
+            if event_id in self._reaction_events or event_id in self._reaction_reservations:
+                return None
+            gate_id = next((gate for gate, event in self._event_ids.items()
+                            if event == prompt_event_id), None)
+            if gate_id is None or gate_id in self._revoked:
+                return None
+            request = self._requests.get(gate_id)
+            if request is None or gate_id in self._resolution_reservations:
+                return None
+            chosen = request.recommended_option if key == "✅" else ""
+            # Reserve both identities before leaving the lock.  The reaction is
+            # only consumed after durable resolution returns a terminal result;
+            # failed/non-terminal writes must leave this exact event retryable.
+            self._reaction_reservations.add(event_id)
+            self._reaction_gate_ids[event_id] = gate_id
+            self._resolution_reservations.add(gate_id)
+
+        try:
+            decision = self.record_decision(gate_id, chosen, str(sender or ""))
+        except Exception:
+            with self._lock:
+                self._reaction_reservations.discard(event_id)
+                self._reaction_gate_ids.pop(event_id, None)
+                self._resolution_reservations.discard(gate_id)
+            return None
+
+        # The bridge owns durable learning.  Run it while both reservations
+        # are held so a persistence failure can release them without consuming
+        # the Matrix event.
+        if on_resolution is not None:
+            try:
+                on_resolution(decision)
+            except Exception:
+                with self._lock:
+                    self._reaction_reservations.discard(event_id)
+                    self._reaction_gate_ids.pop(event_id, None)
+                    self._resolution_reservations.discard(gate_id)
+                return None
+
+        value = getattr(getattr(decision, "outcome", None), "value", None)
+        with self._lock:
+            self._reaction_reservations.discard(event_id)
+            self._resolution_reservations.discard(gate_id)
+            if value in {"approved", "rejected", "expired", "revoked"}:
+                self._reaction_events.add(event_id)
+            else:
+                self._reaction_gate_ids.pop(event_id, None)
+            return decision
+
     def get_matrix_event_id(self, gate_id: str) -> str:
         """Return the Matrix event ID for a presented gate (empty if unknown)."""
         return self._event_ids.get(gate_id, "")
@@ -391,6 +536,52 @@ class MatrixGateAdapter(LightGateAdapter):
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _event_value(event: object, *names: str) -> str:
+    """Read string fields from mappings and typed Matrix gateway events."""
+    for name in names:
+        value = getattr(event, name, None)
+        if value is None and isinstance(event, dict):
+            value = event.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _relation_value(relation: object, *names: str) -> str:
+    """Read fields from mautrix relation objects and mapping-shaped events."""
+    for name in names:
+        value = getattr(relation, name, None)
+        if value is None and isinstance(relation, dict):
+            value = relation.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _nested_relation(content: object) -> object | None:
+    if isinstance(content, dict):
+        return content.get("m.relates_to") or content.get("relates_to")
+    return getattr(content, "m_relates_to", None) or getattr(content, "relates_to", None)
+
+
+def _reaction_relation(event: object) -> dict[str, str]:
+    """Normalize typed mautrix/gateway and mapping reaction event shapes."""
+    relation = getattr(event, "relates_to", None)
+    if relation is None and isinstance(event, dict):
+        relation = event.get("m.relates_to") or event.get("relates_to")
+        if relation is None:
+            relation = _nested_relation(event.get("content"))
+    if relation is None:
+        relation = _nested_relation(getattr(event, "content", None))
+    if relation is None:
+        return {}
+    return {
+        "rel_type": _relation_value(relation, "rel_type", "relType"),
+        "event_id": _relation_value(relation, "event_id", "eventId"),
+        "key": _relation_value(relation, "key"),
+    }
 
 
 def _malformed_request() -> LightGateRequest:
