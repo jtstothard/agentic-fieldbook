@@ -1,10 +1,10 @@
 """Hermes ``pre_tool_call`` adapter for the Fieldbook HITL bridge.
 
-Bridge availability failures before a destructive gate is required return
-``None`` so Hermes' existing approval path remains responsible for the call.
-Once a destructive gate has been required, failures are fail-closed and return
-an explicit block directive.  A configured bridge may still return ``ABORT``,
-which is translated into a veto.
+Bridge construction failures before a destructive gate is required return
+``None`` so Hermes' existing approval path remains responsible for non-gated
+calls.  Once a destructive match has been detected, bridge degradation is
+fail-closed and returns an explicit block directive.  A configured bridge may
+still return ``ABORT``, which is translated into a veto.
 """
 from __future__ import annotations
 
@@ -439,10 +439,36 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
                 }
             preserve_request = True
             return {"action": "approve", "message": message}
+        if status == "fallback":
+            # A destructive match must never fall through to Hermes when the
+            # bridge could not construct, persist, or present its gate.  The
+            # legacy fallback is a notification path, not authorization to
+            # execute the protected command.
+            reason = getattr(result, "reason", "gate bridge degraded") or "gate bridge degraded"
+            return {
+                "action": "block",
+                "message": f"HITL gate blocked: destructive gate unavailable ({reason})",
+            }
+        if status == "proceed":
+            # Explicit bridge authorization preserves the existing non-blocking
+            # path for a destructive action that the bridge approved.
+            return None
         if status == "abort":
             reason = getattr(result, "reason", "destructive action rejected") or "destructive action rejected"
-            return {"action": "block", "message": f"HITL gate blocked destructive action: {reason}"} if isinstance(reason, str) else None
-        return None
+            if isinstance(reason, str):
+                return {"action": "block", "message": f"HITL gate blocked destructive action: {reason}"}
+            return {
+                "action": "block",
+                "message": "HITL gate blocked: bridge returned an unrecognized result",
+            }
+        # Once a destructive match has been detected, only an explicit
+        # PROCEED, PENDING, or ABORT outcome is actionable.  ``None`` and
+        # unknown statuses are bridge degradation, not authorization to fall
+        # through to Hermes' executor.
+        return {
+            "action": "block",
+            "message": "HITL gate blocked: bridge returned an unrecognized result",
+        }
     except Exception:
         if gate_id:
             _LOG.warning("HITL destructive gate failed closed", exc_info=True)
