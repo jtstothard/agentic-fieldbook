@@ -23,6 +23,7 @@ from agentic_fieldbook.light_gate import (
     LightGatePresentation,
     LightGateRequest,
     LightGateRevocation,
+    validate_gate_id,
 )
 from agentic_fieldbook.matrix_gate_adapter import (
     MatrixGateAdapter,
@@ -141,7 +142,9 @@ class TestCreateRequest:
         results = list(ThreadPoolExecutor(max_workers=8).map(
             lambda _: adapter.create_request(**make_inputs()), range(8),
         ))
-        assert {r.gate_id for r in results} == {"matrix-gate-1"}
+        gate_ids = {r.gate_id for r in results}
+        assert len(gate_ids) == 1
+        assert next(iter(gate_ids)).startswith("matrix-gate-")
         assert all(r.outcome is LightGateOutcome.PENDING for r in results)
 
 
@@ -181,7 +184,8 @@ class TestPresent:
         assert f"Gate ID: {request.gate_id}" in sent_body
         assert f"/gate approve {request.gate_id}" in sent_body
         assert f"/gate reject {request.gate_id}" in sent_body
-        assert f"/gate pick <option> {request.gate_id}" in sent_body
+        assert f"/gate pick <index> {request.gate_id}" in sent_body
+        assert "Options:\n1: blue-green" in sent_body
 
     def test_present_unknown_gate_returns_malformed(self):
         adapter, _ = make_adapter()
@@ -281,6 +285,17 @@ class TestRevoke:
 
 class TestCommandParsing:
 
+    @pytest.mark.parametrize("gate_id", ["", " gate-1", "gate 1", "gate\n1", "gate;$x", "gate`id`"])
+    def test_gate_id_validation_rejects_ambiguous_or_substitutable_tokens(self, gate_id):
+        assert not validate_gate_id(gate_id)
+
+    def test_adapter_namespaces_gate_ids_per_instance(self):
+        first, _ = make_adapter()
+        second, _ = make_adapter()
+        a = first.create_request(**make_inputs())
+        b = second.create_request(**make_inputs())
+        assert a.gate_id != b.gate_id
+
     def test_parse_approve(self):
         parsed = parse_gate_command("/gate approve matrix-gate-1")
         assert parsed is not None
@@ -377,6 +392,17 @@ class TestProcessReply:
         assert decision is not None
         assert decision.outcome is LightGateOutcome.APPROVED
         assert decision.chosen_option == "rolling"
+
+    def test_pick_index_chooses_multi_word_option(self):
+        adapter, _ = make_adapter()
+        request = adapter.create_request(**make_inputs(
+            recommended_option="blue green", options=["blue green", "halt now"],
+        ))
+        decision = adapter.process_reply(
+            f"/gate pick 2 {request.gate_id}", "jay",
+        )
+        assert decision is not None
+        assert decision.chosen_option == "halt now"
 
     def test_pick_invalid_option_is_malformed(self):
         adapter, _ = make_adapter()

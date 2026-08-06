@@ -14,6 +14,9 @@ import threading
 from collections import deque
 from typing import Any, Mapping
 
+from ...hitl_config import effective_matrix_room
+from ...light_gate import validate_gate_id
+
 _LOG = logging.getLogger(__name__)
 _PENDING_NATIVE_APPROVALS: dict[str, str] = {}
 _NATIVE_APPROVAL_BRIDGES: dict[str, Any] = {}
@@ -104,6 +107,8 @@ def _bridge_from_context(ctx: Any) -> Any:
 
 def _gate_message(task: Any, gate_id: str) -> str:
     """Render the canonical recommendation-first message for a pending task."""
+    if not validate_gate_id(gate_id):
+        raise ValueError("pending gate has no safe gate_id")
     signature = compute_fork_signature(
         task.fork_description, task.recommended_option, task.options,
         task.trade_off, task.revert_path, "2999-01-01T00:00:00Z",
@@ -247,7 +252,7 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
         source = getattr(event, "source", None)
         platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None))
         room_id = getattr(source, "chat_id", None)
-        gate_room = os.environ.get("MATRIX_GATE_ROOM")
+        gate_room = effective_matrix_room()
         if str(platform).lower() != "matrix" or not gate_room or room_id != gate_room:
             return None
 
@@ -316,10 +321,16 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
         status = getattr(status_value, "value", status_value)
         if status == "pending":
             gate_id = getattr(result, "gate_id", None) or ""
-            if isinstance(gate_id, str) and gate_id:
-                command = args.get("command", "") if isinstance(args, Mapping) else str(args or "")
-                _queue_native_request(gate_id, kwargs.get("bridge"), command)
-                preserve_request = True
+            if not validate_gate_id(gate_id):
+                return {"action": "block", "message": "HITL gate blocked: bridge returned no safe gate_id"}
+            is_bound = getattr(kwargs.get("bridge"), "is_pending_for", None)
+            if callable(is_bound) and not is_bound(gate_id, task.task_id):
+                return {"action": "block", "message": "HITL gate blocked: gate/task binding failed"}
+            command = args.get("command", "") if isinstance(args, Mapping) else str(args or "")
+            explicit_identity = kwargs.get("approval_id") or kwargs.get("request_id") or kwargs.get("approval_key")
+            identity = f"id:{explicit_identity}" if explicit_identity else ""
+            _queue_native_request(gate_id, kwargs.get("bridge"), command, identity)
+            preserve_request = True
             message = _gate_message(task, gate_id)
             if not isinstance(message, str):
                 return None

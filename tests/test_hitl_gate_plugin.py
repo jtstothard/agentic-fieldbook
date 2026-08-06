@@ -74,17 +74,19 @@ def test_hook_translates_pending_to_approval(monkeypatch):
     assert "Gate ID: matrix-gate-42" in directive["message"]
     assert "/gate approve matrix-gate-42" in directive["message"]
     assert "/gate reject matrix-gate-42" in directive["message"]
-    assert "/gate pick <option> matrix-gate-42" in directive["message"]
+    assert "/gate pick <index> matrix-gate-42" in directive["message"]
 
 
-def test_hook_does_not_emit_control_message_without_gate_id(monkeypatch):
+def test_hook_blocks_without_gate_id_and_leaves_no_native_pending_state(monkeypatch):
     """A native approval must never advertise a missing/wrong gate identity."""
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
     with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
                return_value=_result(BridgeStatus.PENDING)):
-        assert _on_pre_tool_call(
+        result = _on_pre_tool_call(
             "terminal", {"command": "DROP TABLE users"}, task_id="call-1"
-        ) is None
+        )
+    assert result["action"] == "block"
+    assert "no safe gate_id" in result["message"]
 
 
 def test_hook_translates_abort_to_block(monkeypatch):
@@ -220,7 +222,7 @@ def test_hook_fail_open_on_rendering_exception(monkeypatch):
     """R1 MEDIUM: _gate_message raising must return None (fail-open), not escape."""
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
     with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
-               return_value=_result(BridgeStatus.PENDING)), \
+               return_value=_result(BridgeStatus.PENDING, gate_id="gate-render")), \
          patch("agentic_fieldbook.plugins.hitl_gate._gate_message",
                side_effect=ValueError("malformed task")):
         result = _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/x"}, task_id="call-1")
@@ -314,6 +316,9 @@ def test_registered_hook_routes_destructive_call_to_live_gate(monkeypatch, tmp_p
     directive = callbacks["pre_tool_call"]("terminal", {"command": "DROP TABLE users"}, task_id="call-1")
     assert directive is not None
     assert directive["action"] == "approve"
+    gate_id = next(iter(context.hitl_gate_bridge._pending))
+    assert gate_id in directive["message"]
+    assert context.hitl_gate_bridge.is_pending_for(gate_id, "call-1")
 
 
 def test_registered_hook_fails_open_to_passthrough_without_live_matrix(monkeypatch):
@@ -900,11 +905,12 @@ def test_failed_gate_message_does_not_leak_thread_association(monkeypatch):
     assert not hasattr(_GATE_THREAD_STATE, "gate_id")
 
 
-def test_home_room_is_not_an_inbound_gate_room(monkeypatch):
+def test_home_room_is_an_inbound_gate_room_when_no_override(monkeypatch):
     monkeypatch.delenv("MATRIX_GATE_ROOM", raising=False)
     monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example")
-    bridge = SimpleNamespace(process_reply=pytest.fail)
-    assert _on_pre_gateway_dispatch(
+    bridge = SimpleNamespace(process_reply=lambda message: _result(BridgeStatus.FALLBACK, "call-1", gate_id="gate-1"))
+    result = _on_pre_gateway_dispatch(
         _GateEvent("/gate approve gate-1", room="!home:example"),
         gateway=SimpleNamespace(hitl_gate_bridge=bridge),
-    ) is None
+    )
+    assert result["action"] == "skip"

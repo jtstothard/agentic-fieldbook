@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, runtime_checkable
@@ -40,22 +41,28 @@ from .light_gate import (
     parse_timestamp,
     render_gate_message,
     validate_light_gate_fields,
+    validate_gate_id,
 )
 
 
 def render_gate_control_message(request: LightGateRequest) -> str:
     """Render the control-room body with an addressable gate identity."""
-    if not isinstance(request.gate_id, str) or not request.gate_id.strip():
+    if not validate_gate_id(request.gate_id):
         raise ValueError("cannot render gate control message without gate_id")
     body = render_gate_message(request)
-    gate_id = request.gate_id.strip()
+    gate_id = request.gate_id
+    option_lines = "\n".join(
+        f"{index}: {option}" for index, option in enumerate(request.options, 1)
+    )
     return (
         f"{body}\n"
         f"Gate ID: {gate_id}\n"
         "Commands:\n"
         f"/gate approve {gate_id}\n"
         f"/gate reject {gate_id}\n"
-        f"/gate pick <option> {gate_id}"
+        f"/gate pick <index> {gate_id}\n"
+        "Options:\n"
+        f"{option_lines}"
     )
 
 # --------------------------------------------------------------------------- #
@@ -109,7 +116,6 @@ class ParsedGateCommand:
 # Match the leading ``/gate <verb>`` prefix (case-sensitive on the slash
 # command, matching the issue spec exactly).
 _GATE_PREFIX_RE = re.compile(r"^/gate\s+(approve|reject|pick)\s+(.+)$")
-_GATE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
 
 def parse_gate_command(text: str) -> ParsedGateCommand | None:
@@ -129,7 +135,7 @@ def parse_gate_command(text: str) -> ParsedGateCommand | None:
 
     if verb in ("approve", "reject"):
         # /gate approve <id>   or   /gate reject <id>
-        if len(tokens) != 1 or _GATE_TOKEN_RE.fullmatch(tokens[0]) is None:
+        if len(tokens) != 1 or not validate_gate_id(tokens[0]):
             return None
         return ParsedGateCommand(
             verb=verb, gate_id=tokens[0], picked_option="",
@@ -138,8 +144,8 @@ def parse_gate_command(text: str) -> ParsedGateCommand | None:
     # verb == "pick":  /gate pick <option> <id>
     if (
         len(tokens) != 2
-        or _GATE_TOKEN_RE.fullmatch(tokens[0]) is None
-        or _GATE_TOKEN_RE.fullmatch(tokens[1]) is None
+        or not validate_gate_id(tokens[0])
+        or not validate_gate_id(tokens[1])
     ):
         return None
     return ParsedGateCommand(
@@ -185,6 +191,7 @@ class MatrixGateAdapter(LightGateAdapter):
         self._by_key: dict[str, str] = {}              # idempotency_key → gate_id
         self._event_ids: dict[str, str] = {}           # gate_id → matrix event_id
         self._revoked: set[str] = set()
+        self._namespace = uuid.uuid4().hex[:12]
         self._counter = 0
         self._lock = threading.Lock()
 
@@ -221,7 +228,7 @@ class MatrixGateAdapter(LightGateAdapter):
                 return old
 
             self._counter += 1
-            gate_id = f"matrix-gate-{self._counter}"
+            gate_id = f"matrix-gate-{self._namespace}-{self._counter}"
             request = LightGateRequest(
                 gate_id=gate_id,
                 fork_description=fork_description,
@@ -365,8 +372,11 @@ class MatrixGateAdapter(LightGateAdapter):
             chosen = request.recommended_option
         elif parsed.verb == "reject":
             chosen = ""
-        else:  # pick
+        else:  # pick; numeric indexes make multi-word options unambiguous.
             chosen = parsed.picked_option
+            if chosen.isdigit():
+                index = int(chosen) - 1
+                chosen = request.options[index] if 0 <= index < len(request.options) else ""
 
         return self.record_decision(parsed.gate_id, chosen, subject_ref)
 

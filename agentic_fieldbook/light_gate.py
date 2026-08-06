@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Sequence
+import re
 
 from .receipt import canonical_digest
 
@@ -37,6 +38,14 @@ class LightGateOutcome(str, Enum):
     REVOKED = "revoked"
     MALFORMED = "malformed"
     IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+
+
+_SAFE_GATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+
+def validate_gate_id(gate_id: object) -> bool:
+    """Return whether *gate_id* is a canonical, non-substitutable token."""
+    return isinstance(gate_id, str) and _SAFE_GATE_ID_RE.fullmatch(gate_id) is not None
 
 
 def parse_timestamp(value: str) -> datetime:
