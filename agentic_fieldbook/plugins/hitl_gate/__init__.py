@@ -11,6 +11,7 @@ import logging
 import os
 import hashlib
 import threading
+import uuid
 from collections import deque
 from typing import Any, Mapping
 
@@ -28,6 +29,7 @@ _GATE_REQUEST_KEYS: dict[tuple[str, str], tuple[str, str]] = {}
 _SEEN_GATE_EVENTS: set[str] = set()
 _SEEN_GATE_EVENTS_ORDER: deque[str] = deque()
 _PENDING_LOCK = threading.Lock()
+_REGISTRATION_NAMESPACES: dict[int, str] = {}
 
 # Kept as a compatibility sentinel for older plugin tests; it is deliberately
 # never used for association.
@@ -179,6 +181,25 @@ def _context_namespace(kwargs: Mapping[str, Any] | None = None, bridge: Any = No
     # Existing callers do not pass lifecycle metadata.  Keep them in one
     # explicit, stable compatibility namespace; never use a command-only key.
     return "namespace:" + "|".join(values) if values else "namespace:legacy"
+
+
+def _registration_namespace(ctx: Any) -> str:
+    """Return the namespace persisted for one registered lifecycle context."""
+    existing = getattr(ctx, "_hitl_gate_namespace", None)
+    if isinstance(existing, str) and existing:
+        return existing
+    cached = _REGISTRATION_NAMESPACES.get(id(ctx))
+    if cached:
+        return cached
+    metadata_namespace = _context_namespace({"gateway_context": ctx})
+    namespace = metadata_namespace
+    if metadata_namespace == "namespace:legacy":
+        namespace = "namespace:registration:" + uuid.uuid4().hex
+    try:
+        setattr(ctx, "_hitl_gate_namespace", namespace)
+    except Exception:
+        _REGISTRATION_NAMESPACES[id(ctx)] = namespace
+    return namespace
 
 
 def _native_key(namespace: str, identity: str) -> tuple[str, str]:
@@ -429,11 +450,13 @@ def register(ctx: Any) -> None:
     """Register the complete hook set, rolling back a partial registration."""
     if detect_destructive is None:
         return
+    namespace = _registration_namespace(ctx)
 
     def on_pre_tool_call(tool_name: str = "", args: Any = None, **kwargs: Any) -> dict[str, str] | None:
         kwargs.setdefault("config", _config_from_context(ctx))
         kwargs["bridge"] = _bridge_from_context(ctx)
         kwargs["gateway_context"] = ctx
+        kwargs["context_namespace"] = namespace
         return _on_pre_tool_call(tool_name, args, **kwargs)
 
     def on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str] | None:
@@ -443,6 +466,7 @@ def register(ctx: Any) -> None:
         # outbound hook, rather than constructing a fresh empty bridge.
         kwargs["gateway"] = ctx
         kwargs["gateway_context"] = ctx
+        kwargs["context_namespace"] = namespace
         return _on_pre_gateway_dispatch(event, **kwargs)
 
     def on_pre_approval_request(**kwargs: Any) -> None:
@@ -452,6 +476,7 @@ def register(ctx: Any) -> None:
         # (session_key, request_id, command, etc.) remain caller-owned.
         kwargs["gateway_context"] = ctx
         kwargs["bridge"] = _bridge_from_context(ctx)
+        kwargs["context_namespace"] = namespace
         return _on_pre_approval_request(**kwargs)
 
     def on_post_approval_response(**kwargs: Any) -> None:
@@ -459,6 +484,7 @@ def register(ctx: Any) -> None:
         # response choice and session key.
         kwargs["gateway_context"] = ctx
         kwargs["bridge"] = _bridge_from_context(ctx)
+        kwargs["context_namespace"] = namespace
         return _on_post_approval_response(**kwargs)
 
     hooks = [

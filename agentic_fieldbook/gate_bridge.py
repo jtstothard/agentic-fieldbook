@@ -233,13 +233,22 @@ class FieldbookGateBridge:
                 return self._fallback(task, "gate_malformed")
             if not validate_gate_id(getattr(request, "gate_id", None)):
                 return self._fallback(task, "gate_malformed")
-            presentation = self.gate_adapter.present(request.gate_id)
-            presentation_outcome = getattr(getattr(presentation, "outcome", None), "value", None)
-            if (getattr(presentation, "gate_id", None) != request.gate_id
-                    or presentation_outcome != LightGateOutcome.PRESENTED.value):
-                return self._fallback(task, "gate_malformed")
             with self._pending_lock:
+                # Bind before publishing. Adapters may synchronously observe the
+                # gate and call process_reply from inside present().
                 self._pending[request.gate_id] = task
+            try:
+                presentation = self.gate_adapter.present(request.gate_id)
+                presentation_outcome = getattr(getattr(presentation, "outcome", None), "value", None)
+                if (getattr(presentation, "gate_id", None) != request.gate_id
+                        or presentation_outcome != LightGateOutcome.PRESENTED.value):
+                    with self._pending_lock:
+                        self._pending.pop(request.gate_id, None)
+                    return self._fallback(task, "gate_malformed")
+            except Exception:
+                with self._pending_lock:
+                    self._pending.pop(request.gate_id, None)
+                raise
             return BridgeResult(BridgeStatus.PENDING, task.task_id, gate_id=request.gate_id,
                                 disposition=decision.disposition.value, reason=decision.reason,
                                 contract_digest=task.contract_digest)

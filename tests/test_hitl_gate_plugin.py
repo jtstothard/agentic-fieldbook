@@ -1090,6 +1090,56 @@ def test_registered_timeout_callback_retires_namespace_bound_gate():
     assert _native_session_for_gate(gate_id, namespace) is None
 
 
+def test_metadata_free_registered_contexts_keep_reverse_callbacks_isolated(monkeypatch):
+    """Registration supplies unique identity when the host supplies no metadata."""
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    command = "rm -rf /tmp/identical-command"
+    contexts = []
+    callbacks = []
+    bridges = []
+    reply_calls = []
+    for name, gate_id in (("a", "gate-metadata-free-a"), ("b", "gate-metadata-free-b")):
+        bridge = SimpleNamespace(
+            is_pending_for=lambda _gate, _task: True,
+            _pending={gate_id: object()},
+            process_reply=lambda _message, gate_id=gate_id: (reply_calls.append(gate_id), _result(
+                BridgeStatus.PROCEED, gate_id, gate_id=gate_id
+            ))[1],
+            expire_gate=lambda _gate: None,
+        )
+        registered = {}
+        context = SimpleNamespace(
+            bridge=bridge,
+            config={"hitl_gate": {"enabled": True}},
+            register_hook=lambda hook, callback, registered=registered: registered.update({hook: callback}),
+        )
+        register(context)
+        contexts.append(context); callbacks.append(registered); bridges.append(bridge)
+
+    assert contexts[0]._hitl_gate_namespace != contexts[1]._hitl_gate_namespace
+    with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback", side_effect=[
+        _result(BridgeStatus.PENDING, "call-a", gate_id="gate-metadata-free-a"),
+        _result(BridgeStatus.PENDING, "call-b", gate_id="gate-metadata-free-b"),
+    ]):
+        for callback, task_id in zip(callbacks, ("call-a", "call-b")):
+            assert callback["pre_tool_call"]("terminal", {"command": command}, task_id=task_id)["action"] == "approve"
+
+    # Deliver native callbacks and inbound gate events in reverse context order.
+    for callback, session in zip(reversed(callbacks), ("native-b", "native-a")):
+        callback["pre_approval_request"](
+            command=command, description="destructive command", pattern_key="rm-rf",
+            session_key=session,
+        )
+    with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        for callback, gate_id in zip(reversed(callbacks), ("gate-metadata-free-b", "gate-metadata-free-a")):
+            result = callback["pre_gateway_dispatch"](_GateEvent(f"/gate approve {gate_id}"))
+            assert result is not None, (reply_calls, contexts[0]._hitl_gate_namespace, contexts[1]._hitl_gate_namespace, dict(_PENDING_NATIVE_APPROVALS))
+            assert result["reason"] == "hitl gate proceed"
+    assert resolve.call_args_list == [(("native-b", "once"),), (("native-a", "once"),)]
+
+
 
 def test_register_rolls_back_hooks_after_partial_failure():
     """A failed registration must not leave earlier callbacks active."""
