@@ -334,14 +334,20 @@ def test_hook_fail_open_on_malformed_config(monkeypatch, config):
 
 
 @pytest.mark.parametrize("result", [
+    None,
     object(),
     SimpleNamespace(status=object()),
     SimpleNamespace(status=BridgeStatus.ABORT, reason=object()),
 ])
-def test_hook_fail_open_on_malformed_result(monkeypatch, result):
+def test_hook_fails_closed_on_malformed_result(monkeypatch, result):
+    """A destructive match never passes through an absent/unknown result."""
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
     with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback", return_value=result):
-        assert _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/x"}) is None
+        result = _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/x"})
+    assert result == {
+        "action": "block",
+        "message": "HITL gate blocked: bridge returned an unrecognized result",
+    }
 
 
 def test_register_fail_open_on_malformed_context():
@@ -429,6 +435,37 @@ def test_registered_hook_blocks_without_live_matrix(monkeypatch):
     result = callbacks["pre_tool_call"]("terminal", {"command": "rm -rf /tmp/x"}, task_id="call-1")
     assert result["action"] == "block"
     assert "destructive gate unavailable" in result["message"]
+
+
+def test_registered_hook_degradation_does_not_invoke_terminal_action(tmp_path, monkeypatch):
+    """The production hook boundary blocks before the host runs the action."""
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    bridge, _transport, fallback_calls, _store, _adapter = _build_round_trip_bridge(
+        tmp_path, transport_fail=True,
+    )
+    callbacks = {}
+    context = SimpleNamespace(
+        hitl_gate_bridge=bridge,
+        register_hook=lambda name, callback: callbacks.update({name: callback}),
+    )
+    register(context)
+
+    terminal_calls = []
+
+    def terminal_action(tool_args):
+        terminal_calls.append(tool_args)
+        return "executed"
+
+    directive = callbacks["pre_tool_call"](
+        "terminal", {"command": "rm -rf /tmp/hitl-e2e"}, task_id="call-e2e",
+    )
+    if not directive or directive.get("action") != "block":
+        terminal_action({"command": "rm -rf /tmp/hitl-e2e"})
+
+    assert directive["action"] == "block"
+    assert "destructive gate unavailable" in directive["message"]
+    assert fallback_calls
+    assert terminal_calls == []
 
 
 def test_live_bridge_routes_non_destructive_always_ask_to_telegram(monkeypatch, tmp_path):

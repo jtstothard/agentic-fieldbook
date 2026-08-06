@@ -449,10 +449,26 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
                 "action": "block",
                 "message": f"HITL gate blocked: destructive gate unavailable ({reason})",
             }
+        if status == "proceed":
+            # Explicit bridge authorization preserves the existing non-blocking
+            # path for a destructive action that the bridge approved.
+            return None
         if status == "abort":
             reason = getattr(result, "reason", "destructive action rejected") or "destructive action rejected"
-            return {"action": "block", "message": f"HITL gate blocked destructive action: {reason}"} if isinstance(reason, str) else None
-        return None
+            if isinstance(reason, str):
+                return {"action": "block", "message": f"HITL gate blocked destructive action: {reason}"}
+            return {
+                "action": "block",
+                "message": "HITL gate blocked: bridge returned an unrecognized result",
+            }
+        # Once a destructive match has been detected, only an explicit
+        # PROCEED, PENDING, or ABORT outcome is actionable.  ``None`` and
+        # unknown statuses are bridge degradation, not authorization to fall
+        # through to Hermes' executor.
+        return {
+            "action": "block",
+            "message": "HITL gate blocked: bridge returned an unrecognized result",
+        }
     except Exception:
         if gate_id:
             _LOG.warning("HITL destructive gate failed closed", exc_info=True)
