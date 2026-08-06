@@ -377,9 +377,18 @@ def register(ctx: Any) -> None:
         kwargs.setdefault("gateway_context", ctx)
         return _on_pre_tool_call(tool_name, args, **kwargs)
 
+    def on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str] | None:
+        # The host may invoke inbound hooks with a different callback context.
+        # Keep the registered PluginContext as the profile/gateway lifecycle
+        # owner so inbound replies use the bridge and adapter created by the
+        # outbound hook, rather than constructing a fresh empty bridge.
+        kwargs["gateway"] = ctx
+        kwargs["gateway_context"] = ctx
+        return _on_pre_gateway_dispatch(event, **kwargs)
+
     hooks = [
         ("pre_tool_call", on_pre_tool_call),
-        ("pre_gateway_dispatch", _on_pre_gateway_dispatch),
+        ("pre_gateway_dispatch", on_pre_gateway_dispatch),
         ("pre_approval_request", _on_pre_approval_request),
         ("post_approval_response", _on_post_approval_response),
     ]

@@ -740,6 +740,50 @@ class _GateEvent:
         )
 
 
+def test_registered_callbacks_share_live_bridge_across_callback_contexts(monkeypatch, tmp_path):
+    """Outbound and inbound hooks must use one lifecycle-owned bridge/adapter."""
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class LiveMatrix:
+        async def send(self, _room_id, _content):
+            return SimpleNamespace(success=True, message_id="$fieldbook-gate")
+
+    callbacks = {}
+    registered_context = SimpleNamespace(
+        adapters={"matrix": LiveMatrix()},
+        register_hook=lambda name, callback: callbacks.update({name: callback}),
+    )
+    register(registered_context)
+
+    command = "rm -rf /tmp/separate-callback-contexts"
+    directive = callbacks["pre_tool_call"](
+        "terminal", {"command": command}, task_id="separate-context-call",
+        gateway_context=SimpleNamespace(),
+    )
+    assert directive is not None and directive["action"] == "approve"
+    bridge = registered_context.hitl_gate_bridge
+    gate_id = next(iter(bridge._pending))
+
+    callbacks["pre_approval_request"](
+        command=command, description="destructive command", pattern_key="rm-rf",
+        session_key="native-separate-context",
+    )
+    event = _GateEvent(f"/gate approve {gate_id}", event_id="$separate-context-event")
+    with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        result = callbacks["pre_gateway_dispatch"](
+            event, gateway=SimpleNamespace(hitl_gate_bridge=SimpleNamespace()),
+        )
+
+    assert result == {"action": "skip", "reason": "hitl gate proceed"}
+    assert resolve.call_args.args == ("native-separate-context", "once")
+    assert bridge.process_reply({"text": f"/gate approve {gate_id}", "sender": "@jay:example"}) is None
+    assert registered_context.hitl_gate_bridge is bridge
+
+
+
 def test_gate_room_approve_resolves_native_approval(monkeypatch):
     monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
     monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
