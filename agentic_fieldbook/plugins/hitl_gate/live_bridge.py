@@ -12,6 +12,8 @@ import concurrent.futures
 from pathlib import Path
 from typing import Any, Callable
 
+from ...hitl_config import effective_matrix_room
+
 
 _DESTRUCTIVE_ALLOWLIST = ("rm-rf", "drop", "truncate", "destroy")
 
@@ -104,7 +106,7 @@ def build_live_bridge(context: Any) -> Any:
     from ...matrix_gate_adapter import MatrixGateAdapter
     from ...matrix_transport import transport_from_gateway
 
-    room_id = os.environ.get("MATRIX_GATE_ROOM") or os.environ.get("MATRIX_HOME_ROOM")
+    room_id = effective_matrix_room()
     if not room_id:
         raise ValueError("MATRIX_HOME_ROOM or MATRIX_GATE_ROOM is required")
     adapters = _resolve_adapters(context)

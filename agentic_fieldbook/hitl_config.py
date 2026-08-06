@@ -7,6 +7,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping
+import os
+
+
+def effective_matrix_room() -> str:
+    """Return the one Matrix room used by both outbound and inbound HITL."""
+    return (os.environ.get("MATRIX_GATE_ROOM", "").strip()
+            or os.environ.get("MATRIX_HOME_ROOM", "").strip())
 
 
 @dataclass(frozen=True)
@@ -26,4 +33,4 @@ class GateBridgeConfig:
                    room_id=str(data.get("room_id", "")))
 
 
-__all__ = ["GateBridgeConfig"]
+__all__ = ["GateBridgeConfig", "effective_matrix_room"]

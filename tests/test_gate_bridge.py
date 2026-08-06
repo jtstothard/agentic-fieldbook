@@ -9,6 +9,7 @@ from agentic_fieldbook.gate_bridge import (
 )
 from agentic_fieldbook.matrix_transport import HermesMatrixTransport, transport_from_gateway
 from agentic_fieldbook.router_bridge import evaluate_or_fallback, get_bridge
+from agentic_fieldbook.light_gate import LightGateDecision, LightGateOutcome, LightGatePresentation
 
 
 def task(**overrides):
@@ -142,3 +143,32 @@ def test_reply_learning_failure_keeps_pending_for_retry(tmp_path):
     assert retry is not None
     assert retry.gate_id == pending.gate_id
     assert pending.gate_id not in bridge._pending
+
+
+def test_presentation_reentrant_reply_resolves_after_bind(tmp_path):
+    """A synchronous adapter callback cannot outrun the gate/task binding."""
+    store = SQLiteLearningStore(tmp_path / "reentrant.db")
+    bridge = None
+
+    class ReentrantAdapter:
+        def create_request(self, *args):
+            del args
+            return type("Request", (), {"gate_id": "gate-reentrant", "outcome": LightGateOutcome.PENDING})()
+
+        def present(self, gate_id):
+            resolved.append(bridge.process_reply(f"/gate approve {gate_id}"))
+            return LightGatePresentation(LightGateOutcome.PRESENTED, gate_id, "", "", (), "", "")
+
+        def process_reply(self, _raw_text, _subject_ref):
+            return LightGateDecision("gate-reentrant", LightGateOutcome.APPROVED, "delete", "actor", "now")
+
+    resolved = []
+    bridge = FieldbookGateBridge(
+        learning_store=store, gate_adapter=ReentrantAdapter(), fallback=lambda _task: None,
+        enabled=True, destructive_allowlist=("delete:item",),
+    )
+    result = bridge.evaluate_and_maybe_gate(task())
+    assert resolved[0] is not None
+    assert resolved[0].status is BridgeStatus.PROCEED
+    assert result.status is BridgeStatus.PENDING
+    assert "gate-reentrant" not in bridge._pending

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 from .gate_evaluator import GateDisposition, GateLearningStore, GateTask, evaluate_gate
 from .governance import detect_always_ask_capabilities
 from .light_gate import LightGateDecision
+from .light_gate import LightGateOutcome, validate_gate_id
 from .receipt import canonical_digest
 
 _LOG = logging.getLogger(__name__)
@@ -230,14 +231,35 @@ class FieldbookGateBridge:
             request_outcome_value = getattr(request_outcome, "value", request_outcome)
             if request_outcome_value not in (None, "pending"):
                 return self._fallback(task, "gate_malformed")
-            self.gate_adapter.present(request.gate_id)
+            if not validate_gate_id(getattr(request, "gate_id", None)):
+                return self._fallback(task, "gate_malformed")
             with self._pending_lock:
+                # Bind before publishing. Adapters may synchronously observe the
+                # gate and call process_reply from inside present().
                 self._pending[request.gate_id] = task
+            try:
+                presentation = self.gate_adapter.present(request.gate_id)
+                presentation_outcome = getattr(getattr(presentation, "outcome", None), "value", None)
+                if (getattr(presentation, "gate_id", None) != request.gate_id
+                        or presentation_outcome != LightGateOutcome.PRESENTED.value):
+                    with self._pending_lock:
+                        self._pending.pop(request.gate_id, None)
+                    return self._fallback(task, "gate_malformed")
+            except Exception:
+                with self._pending_lock:
+                    self._pending.pop(request.gate_id, None)
+                raise
             return BridgeResult(BridgeStatus.PENDING, task.task_id, gate_id=request.gate_id,
                                 disposition=decision.disposition.value, reason=decision.reason,
                                 contract_digest=task.contract_digest)
         except Exception as exc:
             return self._fallback(task, "gate_bridge_unavailable", exc)
+
+    def is_pending_for(self, gate_id: str, task_id: str) -> bool:
+        """Verify the gate is bound to the task before native association."""
+        with self._pending_lock:
+            task = self._pending.get(gate_id)
+            return task is not None and task.task_id == task_id
 
     def _unpack_reply(self, message: Any) -> tuple[str, str]:
         """Unpack an inbound Matrix event/message into (raw_text, subject_ref).
