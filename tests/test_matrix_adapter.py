@@ -274,6 +274,17 @@ class TestRecordDecision:
         assert decision is not None
         assert decision.outcome is LightGateOutcome.REJECTED
 
+    @pytest.mark.parametrize("event_id", [None, "", "   "])
+    def test_reaction_without_event_id_is_ignored(self, event_id):
+        adapter, _ = make_adapter()
+        request = adapter.create_request(**make_inputs())
+        adapter.present(request.gate_id)
+        assert adapter.process_reaction({
+            "event_type": "m.reaction", "event_id": event_id,
+            "room_id": ROOM, "relates_to": {"rel_type": "m.annotation",
+                "event_id": adapter.get_matrix_event_id(request.gate_id), "key": "✅"},
+        }) is None
+
     @pytest.mark.parametrize("relation", [
         {"rel_type": "m.annotation", "event_id": "$unrelated", "key": "✅"},
         {"rel_type": "m.annotation", "event_id": "$prompt", "key": "👍"},

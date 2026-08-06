@@ -1,8 +1,9 @@
 """Hermes ``pre_tool_call`` adapter for the Fieldbook HITL bridge.
 
-The plugin is deliberately fail-open at the integration seam: bridge
-availability failures return ``None`` so Hermes' existing approval path remains
-responsible for the call.  A configured bridge may still return ``ABORT``,
+Bridge availability failures before a destructive gate is required return
+``None`` so Hermes' existing approval path remains responsible for the call.
+Once a destructive gate has been required, failures are fail-closed and return
+an explicit block directive.  A configured bridge may still return ``ABORT``,
 which is translated into a veto.
 """
 from __future__ import annotations
@@ -434,6 +435,9 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None,
             return {"action": "block", "message": f"HITL gate blocked destructive action: {reason}"} if isinstance(reason, str) else None
         return None
     except Exception:
+        if gate_id:
+            _LOG.warning("HITL destructive gate failed closed", exc_info=True)
+            return {"action": "block", "message": "HITL gate blocked: gate handling failed"}
         return None
     finally:
         if not preserve_request and gate_id:

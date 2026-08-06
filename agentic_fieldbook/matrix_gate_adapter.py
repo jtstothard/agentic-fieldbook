@@ -401,7 +401,12 @@ class MatrixGateAdapter(LightGateAdapter):
         room_id = _event_value(message, "room_id", "chat_id")
         event_type = _event_value(message, "event_type", "type")
         relation = _reaction_relation(message)
-        if event_type not in {"m.reaction", "reaction"} or not relation:
+        if (
+            not isinstance(event_id, str)
+            or not event_id.strip()
+            or event_type not in {"m.reaction", "reaction"}
+            or not relation
+        ):
             return None
         if relation.get("rel_type") not in {"m.annotation", "annotation"}:
             return None

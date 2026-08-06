@@ -269,8 +269,8 @@ def test_destroy_with_managed_object_still_matches(command):
     assert match.action_class == "destroy"
 
 
-def test_hook_fail_open_on_rendering_exception(monkeypatch):
-    """R1 MEDIUM: _gate_message raising must return None (fail-open), not escape."""
+def test_hook_fails_closed_on_rendering_exception(monkeypatch):
+    """A required destructive gate must block if rendering it fails."""
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
     bridge = SimpleNamespace(is_pending_for=lambda _gate_id, _task_id: True,
                              _pending={"gate-render": object()})
@@ -280,7 +280,7 @@ def test_hook_fail_open_on_rendering_exception(monkeypatch):
                side_effect=ValueError("malformed task")):
         result = _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/x"},
                                    task_id="call-1", bridge=bridge)
-    assert result is None
+    assert result == {"action": "block", "message": "HITL gate blocked: gate handling failed"}
     assert not _PENDING_NATIVE_REQUESTS
     assert not _GATE_REQUEST_KEYS
     assert not _NATIVE_APPROVAL_BRIDGES
@@ -1226,10 +1226,11 @@ def test_failed_gate_message_does_not_leak_thread_association(monkeypatch):
         "agentic_fieldbook.plugins.hitl_gate._gate_message",
         side_effect=RuntimeError("render failed"),
     ):
-        assert _on_pre_tool_call(
+        result = _on_pre_tool_call(
             "terminal", {"command": "DROP TABLE users"}, task_id="call-1",
             bridge=bridge,
-        ) is None
+        )
+    assert result == {"action": "block", "message": "HITL gate blocked: gate handling failed"}
     assert not hasattr(_GATE_THREAD_STATE, "gate_id")
 
 
