@@ -19,9 +19,47 @@ from agentic_fieldbook.plugins.hitl_gate import (
     _native_session_for_gate,
     _on_pre_approval_request,
     _remember_native_approval,
+    _queue_native_request,
+    _dequeue_native_request,
+    _forget_native_request,
+    _PENDING_NATIVE_APPROVALS,
+    _NATIVE_APPROVAL_BRIDGES,
+    _PENDING_NATIVE_REQUESTS,
+    _GATE_REQUEST_KEYS,
+    _SEEN_GATE_EVENTS,
+    _SEEN_GATE_EVENTS_ORDER,
     _GATE_THREAD_STATE,
     register,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_native_callback_state(monkeypatch):
+    """Keep process-global callback indexes isolated between tests."""
+    # The production callback imports Hermes' optional ``tools.approval``
+    # module lazily.  Provide the smallest test seam when Hermes is not
+    # installed in this standalone checkout; individual tests patch it.
+    import sys
+    import types
+    if "tools.approval" not in sys.modules:
+        approval_module = types.ModuleType("tools.approval")
+        setattr(approval_module, "resolve_gateway_approval", lambda *_args: 1)
+        tools_module = types.ModuleType("tools")
+        setattr(tools_module, "approval", approval_module)
+        monkeypatch.setitem(sys.modules, "tools", tools_module)
+        monkeypatch.setitem(sys.modules, "tools.approval", approval_module)
+
+    for mapping in (_PENDING_NATIVE_APPROVALS, _NATIVE_APPROVAL_BRIDGES,
+                    _PENDING_NATIVE_REQUESTS, _GATE_REQUEST_KEYS):
+        mapping.clear()
+    _SEEN_GATE_EVENTS.clear()
+    _SEEN_GATE_EVENTS_ORDER.clear()
+    yield
+    for mapping in (_PENDING_NATIVE_APPROVALS, _NATIVE_APPROVAL_BRIDGES,
+                    _PENDING_NATIVE_REQUESTS, _GATE_REQUEST_KEYS):
+        mapping.clear()
+    _SEEN_GATE_EVENTS.clear()
+    _SEEN_GATE_EVENTS_ORDER.clear()
 
 
 @pytest.mark.parametrize(
@@ -65,9 +103,11 @@ def test_hook_passes_through_proceed_and_fallback(monkeypatch, status):
 
 def test_hook_translates_pending_to_approval(monkeypatch):
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    bridge = SimpleNamespace(is_pending_for=lambda _gate_id, _task_id: True)
     with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
                return_value=_result(BridgeStatus.PENDING, gate_id="matrix-gate-42")):
-        directive = _on_pre_tool_call("terminal", {"command": "DROP TABLE users"}, task_id="call-1")
+        directive = _on_pre_tool_call("terminal", {"command": "DROP TABLE users"},
+                                      task_id="call-1", bridge=bridge)
     assert directive["action"] == "approve"
     assert directive["message"].startswith("Recommendation: ")
     assert "Fork:" in directive["message"]
@@ -75,6 +115,17 @@ def test_hook_translates_pending_to_approval(monkeypatch):
     assert "/gate approve matrix-gate-42" in directive["message"]
     assert "/gate reject matrix-gate-42" in directive["message"]
     assert "/gate pick <index> matrix-gate-42" in directive["message"]
+    _forget_native_request("matrix-gate-42")
+
+
+def test_pending_without_validator_fails_closed(monkeypatch):
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
+               return_value=_result(BridgeStatus.PENDING, gate_id="gate-no-validator")):
+        result = _on_pre_tool_call("terminal", {"command": "DROP TABLE users"},
+                                   task_id="call-1", bridge=SimpleNamespace())
+    assert result["action"] == "block"
+    assert "binding failed" in result["message"]
 
 
 def test_hook_blocks_without_gate_id_and_leaves_no_native_pending_state(monkeypatch):
@@ -221,12 +272,19 @@ def test_destroy_with_managed_object_still_matches(command):
 def test_hook_fail_open_on_rendering_exception(monkeypatch):
     """R1 MEDIUM: _gate_message raising must return None (fail-open), not escape."""
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    bridge = SimpleNamespace(is_pending_for=lambda _gate_id, _task_id: True,
+                             _pending={"gate-render": object()})
     with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
                return_value=_result(BridgeStatus.PENDING, gate_id="gate-render")), \
          patch("agentic_fieldbook.plugins.hitl_gate._gate_message",
                side_effect=ValueError("malformed task")):
-        result = _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/x"}, task_id="call-1")
+        result = _on_pre_tool_call("terminal", {"command": "rm -rf /tmp/x"},
+                                   task_id="call-1", bridge=bridge)
     assert result is None
+    assert not _PENDING_NATIVE_REQUESTS
+    assert not _GATE_REQUEST_KEYS
+    assert not _NATIVE_APPROVAL_BRIDGES
+    assert not bridge._pending
 
 
 @pytest.mark.parametrize("config", [object(), {"plugins": []}])
@@ -436,6 +494,26 @@ def test_round_trip_approve_raw_string(_round_trip):
     assert reply.outcome == "approved"
     # Resolution must be persisted.
     assert store.check_known_preference(task.fork_description, threshold=1)
+
+
+def test_round_trip_parses_emitted_control_message_independently(_round_trip):
+    """The emitted bridge control message itself drives the reply round-trip."""
+    bridge, transport, _fallback, _store, _adapter = _round_trip
+    task = _make_destructive_task("independent-control")
+    pending = bridge.evaluate_and_maybe_gate(task)
+    assert pending.status is BridgeStatus.PENDING
+    assert len(transport.sent) == 1
+
+    from agentic_fieldbook.matrix_gate_adapter import parse_gate_command
+    control = next(line.strip() for line in transport.sent[0].splitlines()
+                   if line.strip().startswith("/gate "))
+    parsed = parse_gate_command(control)
+    assert parsed is not None
+    assert parsed.gate_id == pending.gate_id
+    assert parsed.verb == "approve"
+    reply = bridge.process_reply(control)
+    assert reply is not None
+    assert reply.status is BridgeStatus.PROCEED
 
 
 def test_round_trip_reject_raw_string(_round_trip):
@@ -885,7 +963,8 @@ def test_native_association_survives_cross_thread_callbacks_and_timeout(monkeypa
     command = "rm -rf /tmp/cross-executor"
     gate_id = "gate-cross-executor"
     expired = []
-    bridge = SimpleNamespace(expire_gate=lambda value: expired.append(value))
+    bridge = SimpleNamespace(expire_gate=lambda value: expired.append(value),
+                             is_pending_for=lambda _gate_id, _task_id: True)
     with patch(
         "agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
         return_value=_result(BridgeStatus.PENDING, "call-cross", gate_id=gate_id),
@@ -909,6 +988,107 @@ def test_native_association_survives_cross_thread_callbacks_and_timeout(monkeypa
     assert expired == [gate_id]
     assert _native_session_for_gate(gate_id) is None
     _forget_native_approval(gate_id)
+
+
+def test_native_request_queues_are_concurrently_namespace_isolated():
+    """Identical request values in two contexts cannot consume each other."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    command = "rm -rf /tmp/same-command"
+    bridge_a = SimpleNamespace(name="bridge-a")
+    bridge_b = SimpleNamespace(name="bridge-b")
+
+    def round_trip(namespace, gate_id, bridge):
+        _queue_native_request(gate_id, bridge, command, namespace=namespace)
+        return _dequeue_native_request({"command": command,
+                                        "context_namespace": namespace})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda values: round_trip(*values),
+            (("profile-a/lifecycle-a/bridge-a", "gate-a", bridge_a),
+             ("profile-b/lifecycle-b/bridge-b", "gate-b", bridge_b)),
+        ))
+    assert {item[0] for item in results if item} == {"gate-a", "gate-b"}
+    assert {item[1].name for item in results if item} == {"bridge-a", "bridge-b"}
+    _forget_native_request("gate-a", "profile-a/lifecycle-a/bridge-a")
+    _forget_native_request("gate-b", "profile-b/lifecycle-b/bridge-b")
+    assert not _PENDING_NATIVE_APPROVALS
+
+
+def test_registered_approval_callbacks_propagate_namespace_through_gate_resolution(monkeypatch):
+    """Registered lifecycle context binds queue, association, and /gate lookup."""
+    import sys
+    import types
+
+    monkeypatch.setenv("HITL_GATE_ENABLED", "1")
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    resolved = []
+    approval_module = types.ModuleType("tools.approval")
+    setattr(approval_module, "resolve_gateway_approval",
+            lambda session, choice: resolved.append((session, choice)) or 1)
+    tools_module = types.ModuleType("tools")
+    setattr(tools_module, "approval", approval_module)
+
+    bridge = SimpleNamespace(
+        is_pending_for=lambda _gate_id, _task_id: True,
+        process_reply=lambda _message: _result(BridgeStatus.PROCEED, "call-namespace", gate_id=gate_id),
+        expire_gate=lambda value: expired.append(value),
+    )
+    callbacks = {}
+    ctx = SimpleNamespace(
+        config={}, bridge=bridge, profile_id="profile-a", lifecycle_id="lifecycle-a",
+        bridge_id="bridge-a", register_hook=lambda name, callback: callbacks.update({name: callback}),
+    )
+    command = "rm -rf /tmp/namespace-round-trip"
+    gate_id = "gate-namespace-round-trip"
+    expired = []
+
+    with patch.dict(sys.modules, {"tools": tools_module, "tools.approval": approval_module}):
+        register(ctx)
+        with patch("agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
+                   return_value=_result(BridgeStatus.PENDING, "call-namespace", gate_id=gate_id)):
+            directive = callbacks["pre_tool_call"](
+                "terminal", {"command": command}, task_id="call-namespace",
+                gateway_context=SimpleNamespace(),
+            )
+        assert directive["action"] == "approve"
+        callbacks["pre_approval_request"](
+            command=command, description="destructive command", pattern_key="rm-rf",
+            session_key="native-namespace", gateway_context=SimpleNamespace(),
+        )
+        namespace = "namespace:lifecycle_id=lifecycle-a|profile_id=profile-a|bridge_id=bridge-a"
+        assert _native_session_for_gate(gate_id, namespace) == "native-namespace"
+        result = callbacks["pre_gateway_dispatch"](
+            _GateEvent(f"/gate approve {gate_id}"), gateway=SimpleNamespace(),
+            gateway_context=SimpleNamespace(),
+        )
+
+    assert result == {"action": "skip", "reason": "hitl gate proceed"}
+    assert resolved == [("native-namespace", "once")]
+    assert not _native_session_for_gate(gate_id, namespace)
+
+
+def test_registered_timeout_callback_retires_namespace_bound_gate():
+    expired = []
+    gate_id = "gate-namespace-timeout"
+    bridge = SimpleNamespace(expire_gate=lambda value: expired.append(value))
+    callbacks = {}
+    ctx = SimpleNamespace(
+        bridge=bridge, profile_id="profile-timeout", lifecycle_id="lifecycle-timeout",
+        bridge_id="bridge-timeout",
+        register_hook=lambda name, callback: callbacks.update({name: callback}),
+    )
+    register(ctx)
+    namespace = "namespace:lifecycle_id=lifecycle-timeout|profile_id=profile-timeout|bridge_id=bridge-timeout"
+    _remember_native_approval(gate_id, "native-timeout", bridge, namespace)
+    callbacks["post_approval_response"](
+        choice="timeout", session_key="native-timeout", gateway_context=SimpleNamespace(),
+    )
+    assert expired == [gate_id]
+    assert _native_session_for_gate(gate_id, namespace) is None
+
 
 
 def test_register_rolls_back_hooks_after_partial_failure():
@@ -936,6 +1116,8 @@ def test_register_rolls_back_hooks_after_partial_failure():
 def test_failed_gate_message_does_not_leak_thread_association(monkeypatch):
     monkeypatch.setenv("HITL_GATE_ENABLED", "1")
     pending = _result(BridgeStatus.PENDING, "call-1", gate_id="gate-failed-render")
+    bridge = SimpleNamespace(is_pending_for=lambda _gate_id, _task_id: True,
+                             _pending={"gate-failed-render": object()})
     with patch(
         "agentic_fieldbook.plugins.hitl_gate.evaluate_or_fallback",
         return_value=pending,
@@ -945,6 +1127,7 @@ def test_failed_gate_message_does_not_leak_thread_association(monkeypatch):
     ):
         assert _on_pre_tool_call(
             "terminal", {"command": "DROP TABLE users"}, task_id="call-1",
+            bridge=bridge,
         ) is None
     assert not hasattr(_GATE_THREAD_STATE, "gate_id")
 
