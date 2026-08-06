@@ -997,6 +997,45 @@ def test_reaction_native_resolution_failure_is_retryable(monkeypatch):
     assert resolve.call_count == 2
 
 
+def test_real_bridge_reaction_native_retry_cleans_up_without_duplicate_learning(tmp_path, monkeypatch):
+    """The real bridge path retries native resolution and records learning once."""
+    import sqlite3
+    from datetime import timedelta
+    from agentic_fieldbook.gate_bridge import FieldbookGateBridge, SQLiteLearningStore
+    from agentic_fieldbook.matrix_gate_adapter import MatrixGateAdapter
+
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!room:test")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    store = SQLiteLearningStore(tmp_path / "native-retry.sqlite")
+    transport = _FakeReplyTransport()
+    adapter = MatrixGateAdapter(transport, "!room:test", validity_window=timedelta(minutes=5),
+                                allowed_senders={"@jay:example"})
+    bridge = FieldbookGateBridge(learning_store=store, gate_adapter=adapter,
+                                 fallback=lambda _task: None, enabled=True,
+                                 destructive_allowlist=("rm-rf",))
+    task = _make_destructive_task("native-retry-real")
+    pending = bridge.evaluate_and_maybe_gate(task)
+    _remember_native_approval(pending.gate_id, "native-real-session", bridge)
+    event = _GateEvent("", room="!room:test", event_id="$native-real-reaction",
+                       event_type="m.reaction", relates_to={
+                           "rel_type": "m.annotation",
+                           "event_id": adapter.get_matrix_event_id(pending.gate_id),
+                           "key": "✅"})
+
+    with patch("tools.approval.resolve_gateway_approval", side_effect=[0, 1]) as resolve:
+        first = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+        assert first["reason"] == "native approval unresolved"
+        assert bridge.is_pending_for(pending.gate_id, task.task_id)
+        second = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+
+    assert second["reason"] == "hitl gate proceed"
+    assert resolve.call_count == 2
+    assert not bridge.is_pending_for(pending.gate_id, task.task_id)
+    assert _native_session_for_gate(pending.gate_id) is None
+    with sqlite3.connect(tmp_path / "native-retry.sqlite") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM resolution_events").fetchone()[0] == 1
+
+
 def test_reaction_unauthorized_wrong_room_and_replay_are_ignored(monkeypatch):
     monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
     monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")

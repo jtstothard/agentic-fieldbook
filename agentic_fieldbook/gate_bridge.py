@@ -200,6 +200,9 @@ class FieldbookGateBridge:
         self.enabled = enabled
         self.destructive_allowlist = frozenset(destructive_allowlist)
         self._pending: dict[str, RouterTask] = {}
+        # Reactions are durably recorded before native approval resolves. Keep
+        # the result for retries so learning is not recorded twice.
+        self._resolved_reactions: dict[str, BridgeResult] = {}
         self._pending_lock = threading.RLock()
 
     def _fallback(self, task: RouterTask, code: str, exc: Exception | None = None) -> BridgeResult:
@@ -323,6 +326,11 @@ class FieldbookGateBridge:
             # the race where a late Matrix event could record after timeout.
             with self._pending_lock:
                 if _is_matrix_reaction(message):
+                    event_id = getattr(message, "event_id", "")
+                    if isinstance(message, Mapping):
+                        event_id = message.get("event_id", event_id)
+                    if isinstance(event_id, str) and event_id in self._resolved_reactions:
+                        return self._resolved_reactions[event_id]
                     processor = getattr(self.gate_adapter, "process_reaction", None)
                     if not callable(processor):
                         return None
@@ -365,29 +373,50 @@ class FieldbookGateBridge:
                         str(getattr(result, "subject_ref", "") or "unknown"), task.task_id,
                         task.contract_digest,
                     )
-                self._pending.pop(gate_id, None)
                 if value == "approved":
-                    return BridgeResult(BridgeStatus.PROCEED, task_id, gate_id=gate_id, outcome=value,
-                                        contract_digest=digest)
-                if value in {"rejected", "expired", "revoked"}:
-                    return BridgeResult(BridgeStatus.ABORT, task_id, gate_id=gate_id, outcome=value,
-                                        contract_digest=digest)
-                return BridgeResult(BridgeStatus.FALLBACK, task_id, gate_id=gate_id, outcome=value,
-                                    degradation_code="gate_malformed", contract_digest=digest)
+                    bridge_result = BridgeResult(BridgeStatus.PROCEED, task_id, gate_id=gate_id, outcome=value,
+                                                 contract_digest=digest)
+                elif value in {"rejected", "expired", "revoked"}:
+                    bridge_result = BridgeResult(BridgeStatus.ABORT, task_id, gate_id=gate_id, outcome=value,
+                                                contract_digest=digest)
+                else:
+                    bridge_result = BridgeResult(BridgeStatus.FALLBACK, task_id, gate_id=gate_id, outcome=value,
+                                                 degradation_code="gate_malformed", contract_digest=digest)
+                if _is_matrix_reaction(message):
+                    event_id = getattr(message, "event_id", "")
+                    if isinstance(message, Mapping):
+                        event_id = message.get("event_id", event_id)
+                    if isinstance(event_id, str) and event_id:
+                        self._resolved_reactions[event_id] = bridge_result
+                else:
+                    self._pending.pop(gate_id, None)
+                return bridge_result
         except Exception as exc:
             logger.warning("hitl gate reply failed to resolve: %s", exc, exc_info=True)
             return None
+
+    def finalize_resolution(self, gate_id: str) -> bool:
+        """Retire a reaction gate after native approval succeeds."""
+        with self._pending_lock:
+            task = self._pending.pop(gate_id, None)
+            for event_id, result in tuple(self._resolved_reactions.items()):
+                if result.gate_id == gate_id:
+                    self._resolved_reactions.pop(event_id, None)
+            return task is not None
 
     def expire_gate(self, gate_id: str, reason: str = "native approval timed out") -> bool:
         """Retire a pending gate before late Matrix replies can decide it."""
         with self._pending_lock:
             task = self._pending.pop(gate_id, None)
+            for event_id, result in tuple(self._resolved_reactions.items()):
+                if result.gate_id == gate_id:
+                    self._resolved_reactions.pop(event_id, None)
             if task is None:
                 return False
             revoke = getattr(self.gate_adapter, "revoke", None)
             if callable(revoke):
                 revoke(gate_id, reason)
-            return True
+            return task is not None
 
 
 def load_bridge(*, gateway_context: Any = None, **kwargs: Any) -> GateBridge:
