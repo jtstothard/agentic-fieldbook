@@ -808,9 +808,14 @@ def test_hook_fires_approve_via_gateway_runner_ref(monkeypatch, tmp_path):
 
 
 class _GateEvent:
-    def __init__(self, text, room="!gate:example", sender="@jay:example", event_id=None):
+    def __init__(self, text, room="!gate:example", sender="@jay:example", event_id=None,
+                 event_type="m.room.message", relates_to=None, content=None, namespace=None):
         self.text = text
         self.message_id = event_id
+        self.event_type = event_type
+        self.relates_to = relates_to
+        self.content = content
+        self.context_namespace = namespace
         self.source = SimpleNamespace(
             platform=SimpleNamespace(value="matrix"),
             chat_id=room,
@@ -887,6 +892,52 @@ def test_gate_room_reject_resolves_native_deny(monkeypatch):
     with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
         _on_pre_gateway_dispatch(_GateEvent(f"/gate reject {gate_id}"), gateway=SimpleNamespace(hitl_gate_bridge=bridge))
     resolve.assert_called_once_with("session-2", "deny")
+
+
+def test_reaction_approval_resolves_native_approval(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    gate_id = "gate-reaction"
+    _remember_native_approval(gate_id, "session-reaction")
+    bridge = SimpleNamespace(
+        process_reply=lambda message: _result(BridgeStatus.PROCEED, "call-1", gate_id=gate_id)
+    )
+    event = _GateEvent("", event_id="$reaction", event_type="m.reaction",
+                       relates_to={"rel_type": "m.annotation", "event_id": "$prompt", "key": "✅"})
+    with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        result = _on_pre_gateway_dispatch(event, gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    assert result["reason"] == "hitl gate proceed"
+    resolve.assert_called_once_with("session-reaction", "once")
+
+
+def test_reaction_unauthorized_wrong_room_and_replay_are_ignored(monkeypatch):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    calls = []
+    bridge = SimpleNamespace(process_reply=lambda message: calls.append(message) or _result(
+        BridgeStatus.FALLBACK, "call-1", gate_id="gate-reaction-safe"))
+    base = dict(event_type="m.reaction", event_id="$reaction-safe",
+                relates_to={"rel_type": "m.annotation", "event_id": "$prompt", "key": "❌"})
+    assert _on_pre_gateway_dispatch(_GateEvent("", sender="@intruder:example", **base), gateway=SimpleNamespace(hitl_gate_bridge=bridge))["action"] == "skip"
+    assert _on_pre_gateway_dispatch(_GateEvent("", room="!other:example", **base)) is None
+    first = _on_pre_gateway_dispatch(_GateEvent("", **base), gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    second = _on_pre_gateway_dispatch(_GateEvent("", **base), gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    assert first["reason"] == "hitl gate fallback"
+    assert second["reason"] == "replayed hitl gate event"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("key", ["👍", "✅"])
+def test_reaction_namespace_mismatch_or_unrelated_shape_does_not_resolve(monkeypatch, key):
+    monkeypatch.setenv("MATRIX_GATE_ROOM", "!gate:example")
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@jay:example")
+    bridge = SimpleNamespace(process_reply=pytest.fail)
+    event = _GateEvent("", event_id="$bad-shape", event_type="m.reaction",
+                       namespace="other", relates_to={"rel_type": "m.annotation",
+                       "event_id": "$unrelated", "key": key})
+    result = _on_pre_gateway_dispatch(event, context_namespace="current",
+                                      gateway=SimpleNamespace(hitl_gate_bridge=bridge))
+    assert result["action"] == "skip"
 
 
 @pytest.mark.parametrize("sender", ["@intruder:example", None])

@@ -27,6 +27,14 @@ _LOG = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 
 
+def _is_matrix_reaction(message: Any) -> bool:
+    """Recognize event type only; emoji text is never a reaction signal."""
+    event_type = getattr(message, "event_type", None) or getattr(message, "type", None)
+    if event_type is None and isinstance(message, Mapping):
+        event_type = message.get("event_type") or message.get("type")
+    return event_type in {"m.reaction", "reaction"}
+
+
 class BridgeStatus(str, Enum):
     PROCEED = "proceed"
     ABORT = "abort"
@@ -314,7 +322,13 @@ class FieldbookGateBridge:
             # Serialize reply processing with timeout retirement.  This closes
             # the race where a late Matrix event could record after timeout.
             with self._pending_lock:
-                result = self.gate_adapter.process_reply(raw_text, subject_ref)
+                if _is_matrix_reaction(message):
+                    processor = getattr(self.gate_adapter, "process_reaction", None)
+                    if not callable(processor):
+                        return None
+                    result = processor(message, subject_ref)
+                else:
+                    result = self.gate_adapter.process_reply(raw_text, subject_ref)
                 if result is None:
                     return None
                 outcome = getattr(result, "outcome", result)

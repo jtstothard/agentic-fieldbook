@@ -76,6 +76,10 @@ class MatrixMessage:
     event_id: str
     sender: str
     text: str
+    room_id: str = ""
+    event_type: str = "m.room.message"
+    relates_to: dict[str, str] | None = None
+    context_namespace: str = ""
 
 
 @runtime_checkable
@@ -191,6 +195,7 @@ class MatrixGateAdapter(LightGateAdapter):
         self._by_key: dict[str, str] = {}              # idempotency_key → gate_id
         self._event_ids: dict[str, str] = {}           # gate_id → matrix event_id
         self._revoked: set[str] = set()
+        self._reaction_events: set[str] = set()
         self._namespace = uuid.uuid4().hex[:12]
         self._counter = 0
         self._lock = threading.Lock()
@@ -380,6 +385,49 @@ class MatrixGateAdapter(LightGateAdapter):
 
         return self.record_decision(parsed.gate_id, chosen, subject_ref)
 
+    def process_reaction(
+        self, message: object, subject_ref: str = "",
+    ) -> LightGateDecision | None:
+        """Resolve only an exact reaction annotation on the pending prompt.
+
+        Matrix reaction events are deliberately separate from text commands:
+        the key must be exactly ``✅`` or ``❌`` and ``m.relates_to.event_id``
+        must be the event ID returned by :meth:`present` for a still-pending
+        gate.  Arbitrary emoji text and annotations on other messages are not
+        approval signals.
+        """
+        event_id = _event_value(message, "event_id", "message_id")
+        sender = _event_value(message, "sender", "user_id") or subject_ref
+        room_id = _event_value(message, "room_id", "chat_id")
+        event_type = _event_value(message, "event_type", "type")
+        relation = _reaction_relation(message)
+        if event_type not in {"m.reaction", "reaction"} or not relation:
+            return None
+        if relation.get("rel_type") not in {"m.annotation", "annotation"}:
+            return None
+        prompt_event_id = relation.get("event_id", "")
+        key = relation.get("key", "")
+        if key not in {"✅", "❌"} or not prompt_event_id:
+            return None
+        if room_id and room_id != self._room:
+            return None
+        with self._lock:
+            if event_id and event_id in self._reaction_events:
+                return None
+            gate_id = next((gate for gate, event in self._event_ids.items()
+                            if event == prompt_event_id), None)
+            if gate_id is None or gate_id in self._revoked:
+                return None
+            request = self._requests.get(gate_id)
+            if request is None:
+                return None
+            chosen = request.recommended_option if key == "✅" else ""
+            decision = self.record_decision(gate_id, chosen, str(sender or ""))
+            value = getattr(getattr(decision, "outcome", None), "value", None)
+            if event_id and value in {"approved", "rejected", "expired", "revoked"}:
+                self._reaction_events.add(event_id)
+            return decision
+
     def get_matrix_event_id(self, gate_id: str) -> str:
         """Return the Matrix event ID for a presented gate (empty if unknown)."""
         return self._event_ids.get(gate_id, "")
@@ -391,6 +439,38 @@ class MatrixGateAdapter(LightGateAdapter):
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _event_value(event: object, *names: str) -> str:
+    for name in names:
+        value = getattr(event, name, None)
+        if value is None and isinstance(event, dict):
+            value = event.get(name)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _reaction_relation(event: object) -> dict[str, str]:
+    """Normalize mautrix, gateway, and test event relation shapes."""
+    relation = getattr(event, "relates_to", None)
+    if relation is None and isinstance(event, dict):
+        relation = event.get("relates_to")
+        content = event.get("content")
+        if relation is None and isinstance(content, dict):
+            relation = content.get("m.relates_to") or content.get("relates_to")
+    if relation is None:
+        content = getattr(event, "content", None)
+        if isinstance(content, dict):
+            relation = content.get("m.relates_to") or content.get("relates_to")
+    if not isinstance(relation, dict):
+        return {}
+    normalized = {
+        "rel_type": str(relation.get("rel_type") or relation.get("relType") or ""),
+        "event_id": str(relation.get("event_id") or relation.get("eventId") or ""),
+        "key": str(relation.get("key") or ""),
+    }
+    return normalized
 
 
 def _malformed_request() -> LightGateRequest:

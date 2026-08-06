@@ -248,6 +248,45 @@ class TestRecordDecision:
         )
         assert decision.outcome is LightGateOutcome.REVOKED
 
+    def test_reaction_approve_binds_to_prompt_event(self):
+        adapter, _ = make_adapter()
+        request = adapter.create_request(**make_inputs())
+        adapter.present(request.gate_id)
+        decision = adapter.process_reaction({
+            "event_type": "m.reaction", "event_id": "$reaction-1",
+            "sender": "@jay:example", "room_id": ROOM,
+            "content": {"m.relates_to": {"rel_type": "m.annotation",
+                "event_id": adapter.get_matrix_event_id(request.gate_id), "key": "✅"}},
+        })
+        assert decision is not None
+        assert decision.outcome is LightGateOutcome.APPROVED
+        assert decision.chosen_option == request.recommended_option
+
+    def test_reaction_reject_binds_to_prompt_event(self):
+        adapter, _ = make_adapter()
+        request = adapter.create_request(**make_inputs())
+        adapter.present(request.gate_id)
+        decision = adapter.process_reaction({
+            "type": "m.reaction", "event_id": "$reaction-2", "sender": "@jay:example",
+            "room_id": ROOM, "relates_to": {"rel_type": "m.annotation",
+                "event_id": adapter.get_matrix_event_id(request.gate_id), "key": "❌"},
+        })
+        assert decision is not None
+        assert decision.outcome is LightGateOutcome.REJECTED
+
+    @pytest.mark.parametrize("relation", [
+        {"rel_type": "m.annotation", "event_id": "$unrelated", "key": "✅"},
+        {"rel_type": "m.annotation", "event_id": "$prompt", "key": "👍"},
+    ])
+    def test_unrelated_or_arbitrary_reaction_is_ignored(self, relation):
+        adapter, _ = make_adapter()
+        request = adapter.create_request(**make_inputs())
+        adapter.present(request.gate_id)
+        if relation["event_id"] == "$prompt":
+            relation = {**relation, "event_id": adapter.get_matrix_event_id(request.gate_id)}
+        assert adapter.process_reaction({"event_type": "m.reaction", "event_id": "$r",
+                                          "room_id": ROOM, "relates_to": relation}) is None
+
 
 # =========================================================================== #
 # AC: revoke() sends follow-up message

@@ -325,16 +325,22 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
         text = getattr(event, "text", None)
         source = getattr(event, "source", None)
         platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None))
-        room_id = getattr(source, "chat_id", None)
+        room_id = getattr(source, "chat_id", None) or getattr(event, "room_id", None)
         gate_room = effective_matrix_room()
         if str(platform).lower() != "matrix" or not gate_room or room_id != gate_room:
             return None
 
+        event_type = getattr(event, "event_type", None) or getattr(event, "type", None)
+        is_reaction = event_type in {"m.reaction", "reaction"}
         # Gate rooms are notification/control rooms, never ordinary agent input.
-        if not isinstance(text, str) or not text.lstrip().startswith("/gate"):
+        if not is_reaction and (not isinstance(text, str) or not text.lstrip().startswith("/gate")):
             return {"action": "skip", "reason": "hitl gate room is notification-only"}
-        sender = getattr(source, "user_id", None) or getattr(source, "user_id_alt", None)
+        sender = getattr(source, "user_id", None) or getattr(source, "user_id_alt", None) or getattr(event, "sender", None)
         event_id = getattr(event, "message_id", None) or getattr(event, "event_id", None)
+        event_namespace = getattr(event, "context_namespace", None)
+        requested_namespace = kwargs.get("context_namespace")
+        if event_namespace and requested_namespace and event_namespace != requested_namespace:
+            return {"action": "skip", "reason": "wrong hitl gate namespace"}
         if isinstance(event_id, str) and event_id:
             with _PENDING_LOCK:
                 if event_id in _SEEN_GATE_EVENTS:
@@ -347,7 +353,18 @@ def _on_pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> dict[str, str]
         bridge = _bridge_from_context(context) if context is not None else None
         if bridge is None:
             return {"action": "skip", "reason": "hitl gate bridge unavailable"}
-        result = bridge.process_reply({"text": text, "sender": sender})
+        result = bridge.process_reply(
+            {
+                "text": text if isinstance(text, str) else "",
+                "sender": sender,
+                "event_id": event_id or "",
+                "room_id": room_id,
+                "event_type": event_type or "m.room.message",
+                "content": getattr(event, "content", None),
+                "relates_to": getattr(event, "relates_to", None),
+                "context_namespace": requested_namespace or "",
+            }
+        )
         if result is None:
             # ``None`` also represents a bridge exception/unavailability. Do
             # not retire the transport event in that case: Matrix may retry
