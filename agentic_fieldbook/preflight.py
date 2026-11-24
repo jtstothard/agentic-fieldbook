@@ -1,8 +1,12 @@
 """Preflight command for validating Fieldbook skills on target profiles."""
 
+import os
 import subprocess
 import sys
-from typing import List, Optional
+from pathlib import Path
+from typing import List, Optional, Set
+
+PLUGIN_NAME = "agentic-fieldbook"
 
 FIELDBOOK_SKILLS = [
     "contract-schema",
@@ -51,9 +55,39 @@ def _get_profile_skills(profile: str) -> Optional[List[str]]:
             skill_name = parts[1].strip()
             # Filter out table formatting artifacts and empty rows
             if skill_name and not skill_name.startswith("┃"):
+                # Plugin-registered skills may be listed as "<plugin>:<skill>".
+                namespace, sep, bare = skill_name.partition(":")
+                if sep and namespace == PLUGIN_NAME:
+                    skill_name = bare
                 skills.append(skill_name)
 
     return skills
+
+
+def _profile_home(profile: str) -> Path:
+    """Resolve the Hermes home directory for *profile*.
+
+    HERMES_HOME is either the global home (~/.hermes) or, under ``hermes -p``,
+    the profile directory itself (~/.hermes/profiles/NAME).
+    """
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    if hermes_home.parent.name == "profiles" and not (hermes_home / "profiles").is_dir():
+        if hermes_home.name == profile:
+            return hermes_home
+        hermes_home = hermes_home.parent.parent
+    if profile == "default":
+        return hermes_home
+    return hermes_home / "profiles" / profile
+
+
+def _plugin_installed_skills(profile: str) -> Set[str]:
+    """Fieldbook skills shipped inside the profile's plugin install.
+
+    ``hermes plugins install`` puts them under plugins/agentic-fieldbook/skills/,
+    which ``hermes skills list`` does not scan (issue #45).
+    """
+    skills_root = _profile_home(profile) / "plugins" / PLUGIN_NAME / "skills"
+    return {name for name in FIELDBOOK_SKILLS if (skills_root / name / "SKILL.md").is_file()}
 
 
 def check_preflight(profile: str) -> int:
@@ -69,7 +103,8 @@ def check_preflight(profile: str) -> int:
     if installed_skills is None:
         return 1
 
-    missing_skills = [s for s in FIELDBOOK_SKILLS if s not in installed_skills]
+    available = set(installed_skills) | _plugin_installed_skills(profile)
+    missing_skills = [s for s in FIELDBOOK_SKILLS if s not in available]
 
     if not missing_skills:
         print(f"✓ All {len(FIELDBOOK_SKILLS)} Fieldbook skills available on profile '{profile}'")

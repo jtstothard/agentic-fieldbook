@@ -7,6 +7,42 @@ import pytest
 from agentic_fieldbook.preflight import check_preflight, FIELDBOOK_SKILLS
 
 
+@pytest.fixture(autouse=True)
+def isolated_hermes_home(tmp_path, monkeypatch):
+    """Point HERMES_HOME at an empty dir so no real plugin install leaks in."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def _skills_table(names):
+    out = (
+        "                                Installed Skills                                \n"
+        "┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━┓\n"
+        "┃ Name                 ┃ Category            ┃ Source    ┃ Trust     ┃ Status  ┃\n"
+        "┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━┩\n"
+    )
+    for name in names:
+        out += f"│ {name:<20} │ general             │ local     │ local     │ enabled │\n"
+    out += "└──────────────────────┴─────────────────────┴───────────┴───────────┴─────────┘\n"
+    return out
+
+
+def _install_plugin_skills(plugin_root, names):
+    for name in names:
+        skill_dir = plugin_root / "agentic-fieldbook" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+
+
+def _run_with_listing(stdout):
+    mock_result = MagicMock()
+    mock_result.stdout = stdout
+    mock_result.returncode = 0
+    return patch("subprocess.run", return_value=mock_result)
+
+
 class TestPreflightAllPresent:
     def test_all_present_exit_code(self):
         """When all 7 Fieldbook skills are present, exit code is 0."""
@@ -176,3 +212,60 @@ class TestPreflightProfileNotFound:
 
             captured = capsys.readouterr()
             assert "hermes command not found" in captured.err
+
+class TestPreflightPluginInstalledSkills:
+    """Issue #45: skills installed with the plugin live under
+    plugins/agentic-fieldbook/skills/ and are absent from `hermes skills list`."""
+
+    def test_named_profile_plugin_skills_count_as_present(self, isolated_hermes_home, capsys):
+        _install_plugin_skills(
+            isolated_hermes_home / "profiles" / "fieldbook-df" / "plugins", FIELDBOOK_SKILLS
+        )
+        with _run_with_listing(_skills_table(["unrelated-skill"])):
+            assert check_preflight("fieldbook-df") == 0
+        assert "All 7 Fieldbook skills available" in capsys.readouterr().out
+
+    def test_default_profile_uses_hermes_home_plugins(self, isolated_hermes_home):
+        _install_plugin_skills(isolated_hermes_home / "plugins", FIELDBOOK_SKILLS)
+        with _run_with_listing(_skills_table([])):
+            assert check_preflight("default") == 0
+
+    def test_hermes_home_pointing_at_profile_dir(self, isolated_hermes_home, monkeypatch):
+        profile_home = isolated_hermes_home / "profiles" / "fieldbook-df"
+        _install_plugin_skills(profile_home / "plugins", FIELDBOOK_SKILLS)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        with _run_with_listing(_skills_table([])):
+            assert check_preflight("fieldbook-df") == 0
+
+    def test_listing_and_plugin_dir_combine(self, isolated_hermes_home):
+        half = len(FIELDBOOK_SKILLS) // 2
+        _install_plugin_skills(
+            isolated_hermes_home / "profiles" / "p" / "plugins", FIELDBOOK_SKILLS[:half]
+        )
+        with _run_with_listing(_skills_table(FIELDBOOK_SKILLS[half:])):
+            assert check_preflight("p") == 0
+
+    def test_namespaced_listing_names_count_as_present(self):
+        names = [f"agentic-fieldbook:{s}" for s in FIELDBOOK_SKILLS]
+        with _run_with_listing(_skills_table(names)):
+            assert check_preflight("p") == 0
+
+    def test_other_plugin_namespace_does_not_count(self):
+        names = [f"other-plugin:{s}" for s in FIELDBOOK_SKILLS]
+        with _run_with_listing(_skills_table(names)):
+            assert check_preflight("p") == 1
+
+    def test_plugin_dir_without_skill_md_is_still_missing(self, isolated_hermes_home, capsys):
+        skills_root = isolated_hermes_home / "profiles" / "p" / "plugins" / "agentic-fieldbook" / "skills"
+        for name in FIELDBOOK_SKILLS:
+            (skills_root / name).mkdir(parents=True)
+        with _run_with_listing(_skills_table([])):
+            assert check_preflight("p") == 1
+        assert "Missing 7 Fieldbook skill(s)" in capsys.readouterr().err
+
+    def test_other_profiles_plugins_do_not_count(self, isolated_hermes_home):
+        _install_plugin_skills(
+            isolated_hermes_home / "profiles" / "someone-else" / "plugins", FIELDBOOK_SKILLS
+        )
+        with _run_with_listing(_skills_table([])):
+            assert check_preflight("p") == 1
