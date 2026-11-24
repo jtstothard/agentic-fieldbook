@@ -1,4 +1,7 @@
 version: 2
+# Each ecosystem gets one patch/minor group and one major group, so Dependabot
+# opens at most two PRs per ecosystem a week. When a major breaks the build,
+# add an ignore for it instead of leaving the major group red.
 updates:
   - package-ecosystem: pip
     directory: /
@@ -7,9 +10,16 @@ updates:
       day: monday
     groups:
       pip-patch-minor:
+        patterns:
+          - "*"
         update-types:
           - patch
           - minor
+      pip-major:
+        patterns:
+          - "*"
+        update-types:
+          - major
 
   - package-ecosystem: github-actions
     directory: /
@@ -18,6 +28,13 @@ updates:
       day: monday
     groups:
       github-actions-patch-minor:
+        patterns:
+          - "*"
         update-types:
           - patch
           - minor
+      github-actions-major:
+        patterns:
+          - "*"
+        update-types:
+          - major
