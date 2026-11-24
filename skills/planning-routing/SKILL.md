@@ -59,6 +59,33 @@ Use `classify_complexity(issue_title, issue_body, issue_labels)` from `agentic_f
 
 When in doubt, route as bounded or open-ended. The fast path is an optimization for clear mechanical cases; missing it is harmless, using it for non-trivial tasks is dangerous.
 
+## Stale-issue checklist (candidate selection)
+
+An issue tracker lags the code. Before dispatching **any** candidate issue, whatever its complexity class, the router must complete both items below and record the evidence. An unchecked item blocks dispatch. "It looked open" is not evidence.
+
+- [ ] **Defect still present.** The code the issue points at still has the described defect. Run `git grep` for it on the target branch, or read the file and record the path, the lines, and what they show.
+- [ ] **No recent closing commit.** No commit merged to the target branch in the last 7 days closes the issue. If a commit mentions the issue (`refs #N`, `(#N)`), read it, and only acknowledge its SHA if it does not fix the issue. A commit with a closing keyword (`fixes #N`, `closes #N`, `resolves #N`) means the issue is stale. Close it with that evidence instead of dispatching.
+
+If either item fails, do not dispatch. Comment the evidence on the issue, close it or mark it stale, and pick the next candidate.
+
+`agentic_fieldbook.stale_issue_check` turns this checklist into a gate:
+
+```python
+from agentic_fieldbook.stale_issue_check import (
+    check_defect_present_by_grep, evaluate_candidate, git_recent_commits,
+)
+
+# Example: issue #55 asks to replace datetime.utcnow() under src/
+defect = check_defect_present_by_grep(repo, "datetime.utcnow(", paths=["src/"], ref="origin/main")
+verdict = evaluate_candidate(55, defect, git_recent_commits(repo, ref="origin/main"))
+if not verdict.dispatchable:
+    ...  # record verdict.to_markdown() on the issue and pick another candidate
+```
+
+`dispatchable` is true only when both items ran and passed. A skipped defect check (`None`), an empty reading record from `check_defect_present_by_reading`, or a git error all leave an item `not_run`, and that blocks dispatch.
+
+**Worked example: the #44 false pick (v0.2.2 dogfood).** The router picked issue #44 and spent a full session on it. A privacy-hardening commit had already fixed the defect before the tracker caught up. That commit never mentioned #44, so a commit-message search alone would have passed it. Item 1 is what catches this case: grepping for the defective code finds nothing, `defect_present` fails, and the issue is closed as already fixed instead of being dispatched. Run both items every time. Each catches a stale issue that the other misses.
+
 ## Wayfinder tier (destination unclear)
 
 The tiers above assume the *destination* is known — the objective, scope, and acceptance criteria can be stated. When they cannot — when "what does done look like?" is itself unanswered — the task is at the **wayfinder tier**, above all planning tiers. Wayfinding resolves the destination and acceptance criteria through grilling and decision tickets *before* any plan can be written or validated.
